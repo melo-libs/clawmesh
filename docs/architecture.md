@@ -507,9 +507,9 @@ POST   /v1/sync/push              # Push local changes (batched)
 GET    /v1/sync/pull              # Pull server changes (cursor + pagination)
 
 # Memories (CRUD, primarily for dashboard)
-GET    /v1/memories               # List memories (metadata only)
+GET    /v1/memories               # List memories (metadata only). ?bot_id= for cross-bot read (same user)
 POST   /v1/memories               # Create memory
-GET    /v1/memories/*path         # Get single memory (e.g., /v1/memories/project/infra.md)
+GET    /v1/memories/*path         # Get single memory. ?bot_id= for cross-bot read (same user)
 PATCH  /v1/memories/*path         # Update memory
 DELETE /v1/memories/*path         # Delete memory
 
@@ -566,3 +566,4 @@ WS     /v1/ws                     # Real-time sync channel
 - Pricing model for cloud service (free tier limits)?
 - Master password strength requirements (minimum entropy)?
 - Should tags be encrypted too (trading off server-side filtering for full privacy)?
+- Multi-bot collaboration: messaging/events between bots, shared context, task delegation. Current architecture (WebSocket + auth model) is forward-compatible — design when use cases are clearer.
