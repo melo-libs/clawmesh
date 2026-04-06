@@ -1,6 +1,6 @@
 # ClawMesh Architecture Design
 
-> Version: 0.1.0 | Date: 2026-03-31 | Status: Draft
+> Version: 0.2.0 | Date: 2026-04-05 | Status: Draft
 
 ## 1. Overview
 
@@ -32,49 +32,147 @@ User (human)
 
 Memories are stored as markdown files with frontmatter, keeping compatibility with the bot ecosystem (OpenClaw SOUL.md, Claude Code memory, etc.).
 
+Each memory is identified by its **file path** (relative to the bot's memory directory), scoped per bot. No separate ID is needed.
+
+**Local file (what the bot reads/writes):**
+
 ```markdown
 ---
-id: mem_a1b2c3d4
 type: user | feedback | project | reference
 tags: [testing, ci]
-source_bot: bot_abc
-version: 3
-created_at: 2026-03-31T10:00:00Z
-updated_at: 2026-03-31T12:00:00Z
-origin: null | { bot_id, mem_id, inherited_at }
 ---
 
 Memory content in markdown format.
 ```
 
-Key fields:
-- `id`: Globally unique, server-assigned
-- `type`: Memory category, extensible
-- `tags`: User/bot defined labels for selective sync
-- `version`: Monotonically increasing, for sync conflict detection
-- `origin`: Non-null if this memory was inherited from another bot, enabling traceability
+The SDK parses frontmatter to extract `type` and `tags` as plaintext metadata for sync. The **entire file** (including frontmatter) is encrypted as a single blob before upload. This way the server has plaintext metadata for filtering, and the client can reconstruct the original file exactly on pull.
+
+**Server-side record:**
+
+| Column | Description |
+|--------|-------------|
+| `bot_id` | Owner bot (PK part 1) |
+| `file_path` | Relative path, e.g., `role.md`, `project/infra.md` (PK part 2). Must not contain `..` or start with `/` |
+| `version` | Monotonically increasing, server-assigned, for sync conflict detection |
+| `encrypted_content` | Ciphertext blob (nonce + ciphertext + auth_tag) |
+| `type` | Memory category, extracted from frontmatter |
+| `tags` | Labels for filtering, extracted from frontmatter |
+| `created_at` | Server-assigned |
+| `updated_at` | Server-assigned |
+| `origin` | Non-null if inherited from another bot (see Section 6.4) |
 
 ### 2.3 Skill Data Model
 
+Skills are also identified by file path, same as memories.
+
 ```markdown
 ---
-id: skill_x1y2z3
 name: web-search
-version: 1.2.0
-source_bot: bot_abc
+skill_version: 1.2.0
 format: mcp | plugin | script
 ---
 
 Skill definition content.
 ```
 
+**Server-side primary key:** `(bot_id, file_path)`
+
 Skills are synced as opaque files. ClawMesh indexes metadata but does not interpret skill logic.
 
-## 3. Authentication
+## 3. Encryption
+
+All memory and skill content is end-to-end encrypted. The server never sees plaintext.
+
+### 3.1 Key Architecture
+
+```
+Master Password (user remembers, never uploaded)
+       │
+       ▼ Argon2id (salt = user_id, memory=64MB, iterations=3, parallelism=4)
+  Master Key (256-bit)
+       │
+       ├──▶ AES-256-GCM wrap → Encrypted DEK (stored on server)
+       │
+       └──▶ HKDF-SHA256(master_key, "pw-verify") → Password Verify Hash
+             └── stored on server, used to verify master password correctness
+```
+
+- **Master Password**: Set by user at registration. Never leaves the client.
+- **Master Key**: Derived via Argon2id from master password + user_id (UUID, unique per user). Used only to wrap/unwrap the DEK and derive the verify hash.
+- **DEK**: Random 256-bit key, generated at registration. Wrapped with Master Key using AES-256-GCM, stored on server. Used for all content encryption.
+- **Password Verify Hash**: Derived from Master Key via HKDF. Stored on server to let clients verify master password correctness before attempting DEK decryption.
+
+### 3.2 Per-Memory Encryption
+
+Each memory is encrypted individually, compatible with incremental sync and per-memory inheritance.
+
+**Encrypt (client-side):**
+1. Generate random 96-bit nonce
+2. `AES-256-GCM(DEK, nonce, plaintext)` → `ciphertext + auth_tag(16 bytes)`
+3. Store as: `nonce(12) || ciphertext || auth_tag(16)`
+4. Upload this blob + plaintext metadata
+
+**Decrypt (client-side):**
+1. Split blob: first 12 bytes → nonce, last 16 bytes → auth_tag, middle → ciphertext
+2. `AES-256-GCM-Decrypt(DEK, nonce, ciphertext, auth_tag)` → plaintext
+
+> **Critical: Every encryption operation MUST use a fresh random nonce.** Nonce reuse in GCM completely breaks encryption. SDK implementations must use a cryptographically secure random generator (e.g., `crypto.getRandomValues`, `OsRng`).
+
+### 3.3 Client Types
+
+Two types of clients, same key system:
+
+| Client | How it gets the DEK | When it decrypts |
+|--------|---------------------|------------------|
+| Bot | User provides master password during bind, DEK derived and cached locally | Each sync |
+| Dashboard | User enters master password after login, DEK held in memory for session | Browsing/editing |
+
+**Bot flow:**
+1. During bind, user provides master password to bot
+2. Bot derives Master Key → verifies via Password Verify Hash → downloads encrypted DEK → decrypts DEK
+3. Bot caches DEK locally (platform secure storage: Keychain on macOS, keyring on Linux)
+4. On sync: encrypt each memory with DEK before upload, decrypt after download
+
+**Dashboard flow:**
+1. User logs in via OAuth (gets access to account)
+2. User enters master password → client-side JS derives Master Key → verifies → decrypts DEK
+3. Memories decrypted and displayed in browser
+4. Edits encrypted in browser before upload
+
+### 3.4 What the Server Sees
+
+| Data | Server visibility |
+|------|-------------------|
+| Memory/skill content | Ciphertext only (nonce + ciphertext + auth_tag) |
+| Memory metadata (file_path, type, tags, version, timestamps) | Plaintext (for indexing, filtering, conflict resolution) |
+| Encrypted DEK | Stored but cannot decrypt |
+| Password Verify Hash | Stored, used for verification only |
+| Master Password / Master Key / DEK | Never |
+
+> **Note:** Tags and type metadata are stored in plaintext to enable server-side filtering for sync and inheritance. Users should be aware that metadata is not encrypted.
+
+### 3.5 Recovery
+
+Forgetting the master password means losing access to all encrypted content (true E2E guarantee). Mitigations:
+
+- **Recovery Key**: Random 256-bit key, generated at registration, displayed once for user to save offline (similar to 1Password Emergency Kit). Server stores a second copy of DEK encrypted with this Recovery Key.
+- **Recovery flow**: User provides Recovery Key → client decrypts DEK → user sets new master password → DEK re-wrapped with new Master Key.
+- **No server-side recovery**: By design, the server cannot recover data without the master password or recovery key.
+
+### 3.6 Key Rotation
+
+If user changes master password:
+1. Derive new Master Key from new password
+2. Re-encrypt DEK with new Master Key
+3. Derive new Password Verify Hash, upload together with new encrypted DEK
+4. Content is NOT re-encrypted (DEK stays the same, only its wrapper changes)
+5. All bots continue working (they cache the DEK, not the Master Key)
+
+## 4. Authentication
 
 Two authentication methods, unified under the same identity model.
 
-### 3.1 Bind Flow (Default, Recommended)
+### 4.1 Bind Flow (Default, Recommended)
 
 The primary method. User tells the bot to connect, then confirms in ClawMesh.
 
@@ -118,13 +216,20 @@ Bot                          ClawMesh                       User
  |     bot_id: "bot_abc" }      |                            |
 ```
 
+**After bind succeeds, bot obtains DEK:**
+1. Bot receives access_token + refresh_token from poll
+2. User provides master password locally to the bot
+3. Bot calls `GET /v1/keys/dek` to download encrypted DEK
+4. Bot derives Master Key from password → decrypts DEK → caches DEK locally
+5. Bot is now ready to sync (see Section 3.3 for details)
+
 **Security guarantees:**
 - Verification code: User confirms bot-displayed code matches dashboard, prevents impersonation
 - User-initiated confirmation: No confirmation = no binding
 - Poll token: Single-use, expires in 10 minutes
 - Refresh token: Allows long-lived sessions without re-binding, revocable by user
 
-### 3.2 API Key (Developer/Advanced)
+### 4.2 API Key (Developer/Advanced)
 
 For debugging, CI/CD, and scripting scenarios.
 
@@ -134,7 +239,7 @@ For debugging, CI/CD, and scripting scenarios.
 - Supports scoping (read-only, sync-only, full)
 - Revocable anytime from dashboard
 
-### 3.3 Token Lifecycle
+### 4.3 Token Lifecycle
 
 ```
 Bind Flow ──→ access_token (short-lived, 1h)
@@ -147,59 +252,157 @@ Bind Flow ──→ access_token (short-lived, 1h)
 API Key ────→ static token (no expiry, revocable)
 ```
 
-## 4. Sync Protocol
+## 5. Sync Protocol
 
-### 4.1 Incremental Sync
+Push and pull are separate operations. Push uploads local changes to the server; pull downloads server changes to the client.
 
-Each bot maintains a **sync cursor** (last known server version). On sync:
+### 5.1 Client-Side Change Detection (Diff)
 
-1. Bot sends delta (new/modified/deleted memories since last sync)
-2. Server returns delta (changes from cloud since bot's cursor)
-3. Both sides advance cursors
+Bots manage memories as local files (markdown with frontmatter). The SDK detects changes by diffing current files against a local snapshot, without requiring the bot to call SDK APIs for every write.
+
+**Local storage (SQLite):**
 
 ```
-POST /v1/sync
+snapshots table:
+  file_path    TEXT PRIMARY KEY  -- relative path (e.g., "role.md", "project/infra.md")
+  content_hash TEXT  -- SHA-256 of file content
+  version      INT   -- server-assigned version
+  mtime        INT   -- file modification time at last sync
+
+mutation_queue table:
+  id           INTEGER PRIMARY KEY AUTOINCREMENT
+  action       TEXT    -- "upsert" | "delete"
+  file_path    TEXT
+  base_version INT     -- version from snapshots at diff time, for conflict detection
+  content      BLOB   -- encrypted content (for upsert)
+  metadata     TEXT   -- JSON: type, tags, etc.
+  created_at   TEXT
+
+sync_state table:
+  pull_cursor  TEXT   -- last pulled server sequence
+```
+
+**Diff algorithm (runs at sync start):**
+
+1. Scan all `.md` files in memory directory
+2. For each file, compute its relative path as `file_path`
+3. Compare against snapshots table:
+   - **mtime unchanged** → skip (fast path, no I/O)
+   - **mtime changed** → compute SHA-256 → compare with `content_hash`
+     - Hash unchanged → skip (file was touched but content identical)
+     - Hash changed → parse frontmatter for metadata (type, tags) → encrypt content → append `upsert` to mutation_queue
+   - **File not in snapshots** → new memory → parse frontmatter → encrypt → append `upsert` to mutation_queue
+4. For each snapshot entry with no matching file on disk → append `delete` to mutation_queue
+
+### 5.2 Push (Client → Server)
+
+Client sends mutations in batches. Server acknowledges each item individually, enabling safe retry on partial failure.
+
+```
+POST /v1/sync/push
 Authorization: Bearer <token>
 
 {
   "bot_id": "bot_abc",
-  "cursor": "cur_20260331_042",
   "changes": [
-    { "action": "upsert", "memory": "<markdown content>" },
-    { "action": "delete", "memory_id": "mem_xyz" }
+    {
+      "queue_id": 1,
+      "action": "upsert",
+      "file_path": "feedback_testing.md",
+      "base_version": 3,
+      "encrypted_content": "<nonce || ciphertext || auth_tag>",
+      "metadata": { "type": "feedback", "tags": ["testing"] }
+    },
+    {
+      "queue_id": 2,
+      "action": "delete",
+      "file_path": "project/old_notes.md",
+      "base_version": 1
+    }
   ]
 }
 
 Response:
 {
-  "new_cursor": "cur_20260331_045",
-  "server_changes": [
-    { "action": "upsert", "memory": "<markdown content>" },
-    { "action": "delete", "memory_id": "mem_old" }
-  ],
-  "conflicts": []
+  "results": [
+    { "queue_id": 1, "status": "accepted", "new_version": 4 },
+    { "queue_id": 2, "status": "accepted" }
+  ]
 }
 ```
 
-### 4.2 Conflict Resolution
+After receiving response:
+- Remove `acked` entries from mutation_queue
+- Update snapshots table with new version and content_hash
+- If network fails before response, entries remain in queue → retry on next sync
+- Server uses `file_path + base_version` for idempotent dedup (re-push is safe)
 
-- Default strategy: **Last-Write-Wins** (based on `updated_at`)
+### 5.3 Pull (Server → Client)
+
+Client pulls server changes using a cursor with pagination.
+
+```
+GET /v1/sync/pull?cursor=seq_100&limit=100
+Authorization: Bearer <token>
+
+Response:
+{
+  "changes": [
+    {
+      "action": "upsert",
+      "file_path": "project/infra.md",
+      "version": 2,
+      "encrypted_content": "<nonce || ciphertext || auth_tag>",
+      "metadata": { "type": "project", "tags": ["infra"] }
+    }
+  ],
+  "next_cursor": "seq_108",
+  "has_more": false
+}
+```
+
+Client processing:
+1. For each change, check if local memory already has same version → skip
+2. Decrypt content, write to local file
+3. Update snapshots table
+4. After all pages consumed, save `next_cursor` to sync_state
+5. If interrupted, resume from last saved cursor
+
+### 5.4 Full Sync Flow
+
+```
+SDK sync():
+  1. Diff: scan files vs snapshots → generate mutations → write to mutation_queue
+  2. Push: loop through mutation_queue in batches
+     └── for each batch: POST /v1/sync/push → remove acked entries
+  3. Pull: loop with cursor + pagination
+     └── for each page: GET /v1/sync/pull → decrypt → write files → update snapshots
+  4. Save new pull_cursor
+```
+
+### 5.5 Conflict Resolution
+
+- Server checks `base_version` on each push: if server version ≠ base_version, conflict detected
+- Default strategy: **Last-Write-Wins** (based on metadata `version`)
+- Server resolves conflicts using metadata only (content is encrypted, server cannot read it)
 - When conflict is detected, server keeps the winner and stores the loser as a conflict copy
-- User can review and resolve conflicts in dashboard
+- User can review and resolve conflicts in dashboard (decrypted client-side)
 - SDK provides conflict callback for programmatic resolution
 
-### 4.3 Real-time Sync (Optional)
+### 5.6 Real-time Sync (Optional)
 
-- WebSocket connection for push-based sync
+- WebSocket connection for push-based notifications
 - Bot connects to `wss://api.clawmesh.dev/v1/ws`
-- Server pushes changes as they happen (e.g., inherited memories from another bot)
-- Falls back to polling if WebSocket unavailable
+- Server pushes change notifications (bot then pulls via normal flow)
+- Falls back to periodic polling if WebSocket unavailable
 
-## 5. Memory Inheritance
+## 6. Memory Inheritance
 
-The core differentiator. Allows memories to flow between bots under user authorization.
+Allows users to copy memories from one bot to another. This is a one-time, user-initiated operation (snapshot), not continuous sync.
 
-### 5.1 ShareGrant Model
+> **Design decision:** Live (continuous) inheritance was considered and rejected. Different bots operate in different contexts and may hold legitimately different views on the same topic. Automatically pushing memories between bots would introduce contradictions and make bot behavior unpredictable. Snapshot inheritance keeps the user in control.
+
+### 6.1 ShareGrant Model
 
 ```
 User creates a ShareGrant:
@@ -207,7 +410,6 @@ User creates a ShareGrant:
   "id": "grant_xxx",
   "from_bot": "bot_abc",
   "to_bot": "bot_def",
-  "mode": "snapshot" | "live",
   "filter": {
     "types": ["feedback", "project"],
     "tags": ["important"],
@@ -217,18 +419,15 @@ User creates a ShareGrant:
 }
 ```
 
-### 5.2 Two Inheritance Modes
+### 6.2 Snapshot Inheritance
 
-**Snapshot**: One-time copy of matching memories from source bot to target bot.
+One-time copy of matching memories from source bot to target bot.
+
 - Memories are duplicated with `origin` field set for traceability
-- No ongoing relationship after copy
+- No ongoing relationship after copy — source and target evolve independently
+- Target bot can freely modify or delete inherited memories
 
-**Live**: Continuous sync of matching memories.
-- New memories in source bot that match the filter are automatically synced to target
-- Target bot's inherited memories update when source updates
-- Stoppable anytime by user
-
-### 5.3 Filter System
+### 6.3 Filter System
 
 Users can control what gets shared:
 
@@ -239,39 +438,37 @@ Users can control what gets shared:
 | `date_range` | Only memories within a time window |
 | `exclude_tags` | Exclude memories with specific tags |
 
-### 5.4 Traceability
+### 6.4 Traceability
 
 Every inherited memory carries an `origin` field:
 
 ```yaml
 origin:
   bot_id: bot_abc
-  memory_id: mem_original
+  file_path: role.md
   inherited_at: 2026-03-31T12:00:00Z
   grant_id: grant_xxx
 ```
 
 This enables:
 - User can see where a memory came from
-- If source memory is deleted, user can decide whether to keep the copy
 - Audit trail for compliance
 
-## 6. Tech Stack
+## 7. Tech Stack
 
-### 6.1 Server
+### 7.1 Server
 
 | Component | Choice | Rationale |
 |-----------|--------|-----------|
 | Language | Rust | Safety, performance, low resource cost |
 | Web Framework | axum | Async, tower ecosystem, mature |
-| Database | PostgreSQL | Relational integrity, JSONB for metadata |
+| Database | PostgreSQL | Relational integrity, JSONB for metadata, BYTEA for encrypted content |
 | ORM/Query | sqlx | Compile-time checked queries |
-| Object Storage | S3-compatible | Markdown/skill file storage |
 | Auth | custom + OAuth2 | Bind flow is custom; user login is standard OAuth2 |
-| Real-time | tokio-tungstenite | WebSocket for live sync |
+| Real-time | tokio-tungstenite | WebSocket for real-time sync notifications |
 | Queue | PostgreSQL LISTEN/NOTIFY or Redis | Notification delivery, async tasks |
 
-### 6.2 Client Distribution
+### 7.2 Client Distribution
 
 | Form | Language | Use Case |
 |------|----------|----------|
@@ -281,27 +478,51 @@ This enables:
 | MCP Server | TypeScript | OpenClaw and MCP-compatible bots |
 | Skill/Plugin | Per bot platform | Install-and-use, zero code |
 
-### 6.3 Infrastructure
+### 7.3 Storage
+
+All data stored in PostgreSQL. No separate object storage required.
+
+- **Metadata** (file_path, type, tags, version, timestamps): regular columns, indexed for filtering and sync queries
+- **Encrypted content**: `BYTEA` column. PG TOAST handles compression and out-of-line storage automatically for values > ~2KB
+- **Encrypted DEK, recovery-encrypted DEK**: `BYTEA` columns in user table
+- **Query optimization**: list/filter queries should SELECT only metadata columns to avoid TOAST reads; pull content only when needed
+
+Estimated scale: memory files are typically 1-10KB. 1000 users × 1000 memories ≈ 1-5GB, well within PG comfort zone. If large file support is needed in the future (e.g., skill attachments), S3 can be introduced at that point.
+
+### 7.4 Infrastructure
 
 - Container deployment (Docker)
 - PostgreSQL (managed or self-hosted)
-- S3-compatible object storage (MinIO for self-hosted, AWS S3/Cloudflare R2 for cloud)
 - Optional: Redis for caching and pub/sub
 
-## 7. API Overview
+## 8. API Overview
 
 ```
 # Auth
 POST   /v1/bind/request          # Bot initiates bind
 GET    /v1/bind/poll              # Bot polls for confirmation
 POST   /v1/bind/confirm           # User confirms bind
+POST   /v1/auth/refresh           # Refresh access_token using refresh_token
+
+# Encryption
+GET    /v1/keys/dek               # Get encrypted DEK
+PUT    /v1/keys/dek               # Update encrypted DEK (key rotation)
+POST   /v1/keys/setup             # Initial master password setup (store encrypted DEK)
 
 # Sync
-POST   /v1/sync                   # Incremental sync (memories + skills)
-GET    /v1/memories               # List memories
-GET    /v1/memories/:id           # Get single memory
+POST   /v1/sync/push              # Push local changes (batched)
+GET    /v1/sync/pull              # Pull server changes (cursor + pagination)
+
+# Memories (CRUD, primarily for dashboard)
+GET    /v1/memories               # List memories (metadata only)
+POST   /v1/memories               # Create memory
+GET    /v1/memories/*path         # Get single memory (e.g., /v1/memories/project/infra.md)
+PATCH  /v1/memories/*path         # Update memory
+DELETE /v1/memories/*path         # Delete memory
+
+# Skills
 GET    /v1/skills                 # List skills
-GET    /v1/skills/:id             # Get single skill
+GET    /v1/skills/*path           # Get single skill
 
 # Sharing
 POST   /v1/grants                 # Create share grant
@@ -310,6 +531,7 @@ DELETE /v1/grants/:id             # Revoke grant
 
 # Management
 GET    /v1/bots                   # List user's bots
+PATCH  /v1/bots/:id              # Update bot info
 DELETE /v1/bots/:id               # Remove bot
 GET    /v1/bots/:id/status        # Bot sync status
 
@@ -317,14 +539,15 @@ GET    /v1/bots/:id/status        # Bot sync status
 WS     /v1/ws                     # Real-time sync channel
 ```
 
-## 8. Project Phases
+## 9. Project Phases
 
 ### Phase 1: Foundation
 - [ ] Rust server scaffold (axum + sqlx + PostgreSQL)
 - [ ] User registration (GitHub OAuth)
-- [ ] Bind flow authentication
-- [ ] Basic memory CRUD API
-- [ ] TypeScript SDK + CLI
+- [ ] Master password setup + encrypted DEK storage
+- [ ] Bind flow authentication (with DEK delivery)
+- [ ] Basic memory CRUD API (encrypted content)
+- [ ] TypeScript SDK + CLI (with client-side encryption)
 
 ### Phase 2: Sync
 - [ ] Incremental sync protocol
@@ -335,7 +558,6 @@ WS     /v1/ws                     # Real-time sync channel
 ### Phase 3: Inheritance
 - [ ] ShareGrant model
 - [ ] Snapshot inheritance
-- [ ] Live inheritance
 - [ ] Filter system
 
 ### Phase 4: Ecosystem
@@ -344,9 +566,10 @@ WS     /v1/ws                     # Real-time sync channel
 - [ ] Web dashboard
 - [ ] Real-time sync (WebSocket)
 
-## 9. Open Questions
+## 10. Open Questions
 
 - Rate limiting strategy for bind requests (prevent spam)?
-- End-to-end encryption for memories (client-side encryption before sync)?
 - Multi-region deployment considerations?
 - Pricing model for cloud service (free tier limits)?
+- Master password strength requirements (minimum entropy)?
+- Should tags be encrypted too (trading off server-side filtering for full privacy)?
