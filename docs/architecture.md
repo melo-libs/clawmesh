@@ -1,6 +1,6 @@
 # ClawMesh Architecture Design
 
-> Version: 0.2.0 | Date: 2026-04-05 | Status: Draft
+> Version: 0.3.0 | Date: 2026-04-05 | Status: Draft
 
 ## 1. Overview
 
@@ -40,7 +40,7 @@ Common concepts:
 
 Memories are stored as markdown files with frontmatter, keeping compatibility with the bot ecosystem (OpenClaw SOUL.md, Claude Code memory, etc.).
 
-Each memory is identified by its **file path** (relative to the bot's memory directory), scoped per bot. No separate ID is needed.
+Each memory is identified by its **file path** (relative to the memory directory), scoped per namespace. No separate ID is needed.
 
 **Local file (what the bot reads/writes):**
 
@@ -128,11 +128,12 @@ Each memory is encrypted individually, compatible with incremental sync and per-
 
 ### 3.3 Client Types
 
-Two types of clients, same key system:
+Three types of clients, same key system:
 
 | Client | How it gets the DEK | When it decrypts |
 |--------|---------------------|------------------|
 | Bot | User provides master password during bind, DEK derived and cached locally | Each sync |
+| CLI | User provides master password during `clawmesh login`, DEK cached locally | Each sync |
 | Dashboard | User enters master password after login, DEK held in memory for session | Browsing/editing |
 
 **Bot flow:**
@@ -175,6 +176,29 @@ If user changes master password:
 3. Derive new Password Verify Hash, upload together with new encrypted DEK
 4. Content is NOT re-encrypted (DEK stays the same, only its wrapper changes)
 5. All bots continue working (they cache the DEK, not the Master Key)
+
+### 3.7 Security Threat Model
+
+**What we protect against:**
+
+| Threat | Mitigation | Effectiveness |
+|--------|-----------|---------------|
+| Database breach (attacker dumps PG) | E2E encryption -- all content is ciphertext, DEK is wrapped | Full. Content unrecoverable without master password |
+| Server compromise (attacker controls server) | E2E encryption -- server never sees plaintext. Password Verify Hash is derived (HKDF), not the master password itself | Full for content. Attacker could tamper with metadata (type, tags) but not decrypt content |
+| Man-in-the-middle | TLS for transport + E2E encryption for content | Full |
+| Brute-force master password (offline, from stolen encrypted DEK) | Argon2id with high memory cost (64MB) makes each guess expensive | Strong. ~$10K+ to crack a decent password. Weak passwords remain vulnerable |
+| Token theft (attacker steals access_token) | Short-lived (1h), auto-refresh. Revocable in dashboard | Partial. Attacker has access until token expires or is revoked |
+| Replay attacks on sync | base_version checking, server-assigned versions | Full |
+
+**What we do NOT protect against (Phase 1):**
+
+| Threat | Risk | Mitigation path |
+|--------|------|----------------|
+| Device physically compromised | Cached DEK can be extracted from local storage. Attacker can decrypt all synced content | Phase 1: revoke bot access (stops future sync). Future: DEK rotation (re-encrypt all content with new DEK) |
+| Weak master password | Argon2id slows brute force but cannot prevent it for very weak passwords (e.g., "123456") | Enforce minimum password strength at registration. Future: support hardware keys (FIDO2) |
+| Metadata analysis | Tags, types, file paths, timestamps are plaintext. Attacker can infer topics without reading content | Accepted trade-off for server-side filtering. Future: encrypted tags (see Open Questions) |
+| Malicious bot/SDK | A compromised bot with valid DEK could exfiltrate all memories | Out of scope -- bot security is the bot platform's responsibility, not ClawMesh's |
+| Side-channel attacks on clients | Timing attacks on Argon2id, memory dumps during decryption | Standard platform security. Out of scope for Phase 1 |
 
 ## 4. Authentication
 
@@ -428,8 +452,8 @@ Allows users to copy memories from one bot to another. This is a one-time, user-
 User creates a ShareGrant:
 {
   "id": "grant_xxx",
-  "from_bot": "bot_abc",
-  "to_bot": "bot_def",
+  "from_namespace": "bot_abc",
+  "to_namespace": "bot_def",
   "filter": {
     "types": ["feedback", "project"],
     "tags": ["important"],
@@ -439,9 +463,11 @@ User creates a ShareGrant:
 }
 ```
 
+Namespaces can be bots or workspaces. For example, sharing from a workspace to a bot, or between two bots.
+
 ### 6.2 Snapshot Inheritance
 
-One-time copy of matching memories from source bot to target bot.
+One-time copy of matching memories from source namespace to target namespace.
 
 - Memories are duplicated with `origin` field set for traceability
 - No ongoing relationship after copy — source and target evolve independently
@@ -604,9 +630,6 @@ WS     /v1/ws                     # Real-time sync channel
 ## 10. Open Questions
 
 - Multi-region deployment considerations?
-- Master password strength requirements (minimum entropy)?
-- Should tags be encrypted too (trading off server-side filtering for full privacy)?
 - Multi-bot collaboration: messaging/events between bots, shared context, task delegation. Current architecture (WebSocket + auth model) is forward-compatible -- design when use cases are clearer.
-- DEK rotation (full re-encryption) for compromised device scenarios -- Phase 1 deferred.
 
 > Rate limiting, pricing/free tier, and account lifecycle are now defined in `docs/user-stories.md` Sections 3-6.
