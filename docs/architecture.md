@@ -609,36 +609,46 @@ WS     /v1/ws                     # Real-time sync channel
 
 ## 9. Project Phases
 
-### Phase 1: Foundation
+### MVP (Phase 1): Complete Sync Flow
+Goal: user can register, bind a bot, and sync memories across devices.
+
 - [ ] Rust server scaffold (axum + sqlx + PostgreSQL)
+- [ ] Database schema
 - [ ] User registration (GitHub OAuth)
-- [ ] Master password setup + encrypted DEK storage
+- [ ] Master password setup + encrypted DEK storage + Recovery Key
 - [ ] Bind flow authentication (with DEK delivery)
 - [ ] CLI login (OAuth Device Flow)
 - [ ] Workspace CRUD
-- [ ] Basic memory CRUD API (encrypted content)
-- [ ] TypeScript SDK + CLI (with client-side encryption)
+- [ ] Memory CRUD API (encrypted content)
+- [ ] Sync protocol: push/pull with diff-based change detection
+- [ ] Conflict detection (server version wins, store conflict copy)
+- [ ] TypeScript SDK (client-side encryption, diff, sync)
 - [ ] CLI: `clawmesh login`, `clawmesh init`, `clawmesh sync`
 
-### Phase 2: Sync
-- [ ] Incremental sync protocol (push/pull + diff)
-- [ ] Conflict detection and resolution
-- [ ] Skill sync
+### Phase 2: Cross-Bot Sharing + Ecosystem
+Goal: knowledge sharing between bots, broader tool integration.
+
+- [ ] Snapshot inheritance (ShareGrant model + filter system)
+- [ ] Cross-namespace memory read API
 - [ ] Claude Code hook integration
+- [ ] Skill sync
 - [ ] Python SDK
 
-### Phase 3: Inheritance
-- [ ] ShareGrant model
-- [ ] Snapshot inheritance
-- [ ] Filter system
-- [ ] Cross-namespace memory read API
+### Phase 3: Dashboard + Experience
+Goal: full management UI, polished experience.
 
-### Phase 4: Ecosystem
-- [ ] MCP Server (optional integration layer)
-- [ ] OpenClaw skill/plugin
-- [ ] Web dashboard
+- [ ] Web dashboard (memory management, conflict resolution UI, sync status)
 - [ ] Real-time sync (WebSocket)
 - [ ] CLI daemon mode (background file watcher + auto-sync)
+- [ ] Data export / account deletion
+
+### Phase 4: Platform
+Goal: ecosystem expansion, enterprise readiness.
+
+- [ ] MCP Server (optional integration layer)
+- [ ] OpenClaw skill/plugin
+- [ ] Memory-as-a-Service API (third-party integrations)
+- [ ] Enterprise features (SSO, audit log, admin dashboard)
 
 ## 10. Open Questions
 
