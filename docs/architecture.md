@@ -6,6 +6,19 @@
 
 ClawMesh is a cloud service that enables AI bots (OpenClaw and similar xxxclaw agents) to securely sync their memories and skills, with support for cross-bot memory inheritance and selective synchronization.
 
+### Long-Term Vision: Memory-as-a-Service
+
+ClawMesh starts as a sync tool for AI bot memories, but the long-term vision is broader: **become the memory infrastructure layer for AI agents.**
+
+Any AI application needs persistent memory — remembering user preferences, project context, learned behaviors across sessions. Building this well (E2E encryption, sync, conflict resolution) is hard. ClawMesh aims to provide this as a service:
+
+- **Phase A (current):** Developer tool -- sync memories across your own bots and devices
+- **Phase B:** Memory-as-a-Service API -- any AI application can use ClawMesh as its persistent memory backend
+- **Phase C:** Enterprise agent management -- centralized memory management for fleets of AI agents
+- **Phase D:** Agent collaboration -- enable AI agents to share context and collaborate in real-time
+
+The current architecture is designed to support this evolution. The namespace model, E2E encryption, and sync protocol are general enough to serve both individual developers and third-party AI platforms.
+
 ## 2. Core Concepts
 
 ### 2.1 Identity Model
