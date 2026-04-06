@@ -282,10 +282,162 @@ Effect: every time Claude Code writes a memory file, ClawMesh syncs silently. Us
 - Workspace name is user-chosen, shared across machines by using the same name
 - Sync trigger is flexible: manual CLI, hook, or future daemon mode
 
-## 3. Experience Principles
+## 3. Account Lifecycle
+
+### 3.1 Data Export
+
+User wants to download all their memories locally.
+
+**Flow (Dashboard):**
+1. Settings -> "Export Data"
+2. Enter master password
+3. Browser decrypts all memories client-side
+4. Downloads as a zip: one markdown file per memory, preserving directory structure
+
+```
+export_2026-04-05/
+  bot_laptop-claw/
+    role.md
+    feedback_testing.md
+    project/infra.md
+  ws_clawmesh/
+    MEMORY.md
+    project_clawmesh.md
+```
+
+Export is always **decrypted** (plaintext markdown) -- the whole point is portability. Optionally offer encrypted backup for migration to another ClawMesh instance.
+
+### 3.2 Account Deletion
+
+**Flow (Dashboard):**
+1. Settings -> "Delete Account"
+2. Warning: "This will permanently delete all your data. This cannot be undone. Your bots will lose access immediately."
+3. Enter master password to confirm
+4. Server deletes: all encrypted content, encrypted DEK, recovery-encrypted DEK, metadata, account record
+5. Confirmation email sent
+
+**E2E encryption makes this clean:** since the server only stores ciphertext, deleting the encrypted DEK makes all content permanently unrecoverable. Deleting the ciphertext on top of that is defense-in-depth.
+
+**GDPR compliance:** Encrypted data without its key is considered anonymized (GDPR Recital 26). We delete everything anyway (ciphertext + keys + metadata) within 30 days. Keep only an audit log entry (hashed user ID + deletion timestamp) for compliance.
+
+## 4. Limits and Quotas
+
+### 4.1 Free Tier
+
+| Resource | Free | Pro (future) |
+|----------|------|-------------|
+| Bots | 2 | Unlimited |
+| Workspaces | 2 | Unlimited |
+| Memories per namespace | 30 | Unlimited |
+| Storage per user | 100 MB | 10 GB |
+| Sync frequency | Every 5 min | Real-time (WebSocket) |
+| Snapshot inheritance | 3 per month | Unlimited |
+
+Memory files are curated knowledge, not auto-generated logs -- 30 per namespace is enough for 1-2 active projects on the free tier. Exceeding the limit is a natural upgrade signal.
+
+### 4.2 Rate Limits
+
+| Endpoint type | Limit | Notes |
+|---------------|-------|-------|
+| Auth (bind, login, refresh) | 10 req/min per IP | Prevent brute force |
+| Sync (push/pull) | 120 req/min per user | Higher limit for sync polling |
+| CRUD (memories, bots) | 60 req/min per user | Standard API access |
+
+Communication via standard headers:
+- `X-RateLimit-Limit`: max requests in window
+- `X-RateLimit-Remaining`: remaining requests
+- `X-RateLimit-Reset`: window reset time (Unix timestamp)
+- `429 Too Many Requests` with `Retry-After` header when exceeded
+
+SDK handles 429 automatically with exponential backoff.
+
+## 5. Error States and Graceful Degradation
+
+### 5.1 Core Rule
+
+**Local data is always accessible.** Server issues must never prevent the user from using their bot or reading their memories. Sync is a background enhancement, not a dependency.
+
+### 5.2 Error Scenarios
+
+| Scenario | Bot behavior | Dashboard behavior |
+|----------|-------------|-------------------|
+| Server unreachable | Works normally with local memories. Queues changes. Subtle status: "Sync pending" | Shows cached data if available, or "Server unavailable, retrying..." |
+| Sync push fails | Retry with exponential backoff (1s, 2s, 4s... cap 5min). No user interruption | N/A |
+| Sync pull fails | Use local data. Retry on next sync cycle | N/A |
+| Auth token expired | SDK auto-refreshes. If refresh fails, bot notifies: "Please re-authenticate with ClawMesh" | Redirect to login |
+| Master password wrong | "Incorrect password. Please try again." (verified via Password Verify Hash before attempting DEK decryption) | Same, with retry limit (5 attempts, then cooldown) |
+| Conflict detected | Server auto-resolves, stores conflict copy. Bot may mention: "1 memory conflict detected, resolve in dashboard" | Show in conflicts list |
+| Storage quota exceeded | Push rejected with clear error. Bot: "ClawMesh storage full. Clean up old memories or upgrade." | Banner: "Storage 98% full" |
+
+### 5.3 Retry Strategy
+
+```
+Sync failure retry:
+  1st: wait 1s
+  2nd: wait 2s
+  3rd: wait 4s
+  4th: wait 8s
+  ...
+  cap: wait 5 min
+  
+  After 1 hour of failures: stop retrying, notify user once
+  Resume on: next manual sync, or next app/session start
+```
+
+## 6. Observability (Dashboard)
+
+### 6.1 Sync Status
+
+Each bot and workspace shows a sync health indicator:
+
+```
+Bots:
+  laptop-claw     [green]  Last sync: 2 min ago    56 memories
+  server-claw     [green]  Last sync: 15 min ago   12 memories
+  phone-claw      [yellow] Last sync: 3 days ago   8 memories
+
+Workspaces:
+  clawmesh        [green]  Last sync: 5 min ago    5 memories  (2 devices)
+```
+
+Color coding:
+- Green: synced within last hour
+- Yellow: last sync > 24 hours ago
+- Red: sync errors or auth issues
+
+### 6.2 Activity Log
+
+```
+Dashboard -> Activity
+
+2026-04-05 14:30  laptop-claw    pushed 2 memories
+2026-04-05 14:25  ws_clawmesh    pulled 1 memory (from desktop)
+2026-04-05 13:00  server-claw    conflict detected: project/infra.md
+2026-04-05 10:00  new-phone-claw bound successfully
+```
+
+Helps user understand what's happening across their bots without needing to check each one.
+
+### 6.3 Storage Usage
+
+```
+Dashboard -> Settings -> Storage
+
+Used: 4.2 MB / 100 MB (free tier)
+
+By namespace:
+  laptop-claw    2.8 MB (56 memories)
+  server-claw    0.6 MB (12 memories)
+  ws_clawmesh    0.3 MB (5 memories)
+  phone-claw     0.5 MB (8 memories)
+```
+
+## 7. Experience Principles
 
 1. **Invisible when working** -- sync happens silently, user only notices ClawMesh when they need it
 2. **User always decides** -- no automatic overwrites, no silent merges. Bot suggests, user approves
 3. **Bot does the thinking** -- bots can understand memory content semantically, not just diff bytes. This is ClawMesh's advantage over traditional sync tools
 4. **Master password once** -- entered once per device/session, not on every operation
 5. **Dashboard for overview, bot for action** -- dashboard gives the bird's eye view across all bots; individual bots handle conversational operations
+6. **Local-first** -- local data is always accessible, server is a sync enhancement not a dependency
+7. **Graceful degradation** -- errors are handled silently with retries, user is only notified when action is needed

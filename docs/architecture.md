@@ -603,10 +603,10 @@ WS     /v1/ws                     # Real-time sync channel
 
 ## 10. Open Questions
 
-- Rate limiting strategy for bind requests (prevent spam)?
 - Multi-region deployment considerations?
-- Pricing model for cloud service (free tier limits)?
 - Master password strength requirements (minimum entropy)?
 - Should tags be encrypted too (trading off server-side filtering for full privacy)?
 - Multi-bot collaboration: messaging/events between bots, shared context, task delegation. Current architecture (WebSocket + auth model) is forward-compatible -- design when use cases are clearer.
 - DEK rotation (full re-encryption) for compromised device scenarios -- Phase 1 deferred.
+
+> Rate limiting, pricing/free tier, and account lifecycle are now defined in `docs/user-stories.md` Sections 3-6.
