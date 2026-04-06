@@ -260,43 +260,37 @@ Push and pull are separate operations. Push uploads local changes to the server;
 
 Bots manage memories as local files (markdown with frontmatter). The SDK detects changes by diffing current files against a local snapshot, without requiring the bot to call SDK APIs for every write.
 
-**Local storage (SQLite):**
+**Local storage:** A single JSON snapshot file (e.g., `.clawmesh/sync.json`). No SQLite or other database dependency.
 
+```json
+{
+  "pull_cursor": "seq_100",
+  "files": {
+    "role.md": { "content_hash": "sha256:a3f...", "version": 3, "mtime": 1712100000 },
+    "project/infra.md": { "content_hash": "sha256:7c1...", "version": 2, "mtime": 1712100000 }
+  }
+}
 ```
-snapshots table:
-  file_path    TEXT PRIMARY KEY  -- relative path (e.g., "role.md", "project/infra.md")
-  content_hash TEXT  -- SHA-256 of file content
-  version      INT   -- server-assigned version
-  mtime        INT   -- file modification time at last sync
 
-mutation_queue table:
-  id           INTEGER PRIMARY KEY AUTOINCREMENT
-  action       TEXT    -- "upsert" | "delete"
-  file_path    TEXT
-  base_version INT     -- version from snapshots at diff time, for conflict detection
-  content      BLOB   -- encrypted content (for upsert)
-  metadata     TEXT   -- JSON: type, tags, etc.
-  created_at   TEXT
-
-sync_state table:
-  pull_cursor  TEXT   -- last pulled server sequence
-```
+> **Design decision:** SQLite was considered but rejected. Diff is idempotent — interruption at any point is recovered by re-diffing on next sync, making a persistent mutation queue unnecessary. A JSON file has zero external dependencies, works on all platforms (including serverless), and is sufficient for the expected scale (tens to hundreds of memories per bot). Crash safety is achieved via atomic write (write temp file → rename).
 
 **Diff algorithm (runs at sync start):**
 
 1. Scan all `.md` files in memory directory
 2. For each file, compute its relative path as `file_path`
-3. Compare against snapshots table:
+3. Compare against snapshot file:
    - **mtime unchanged** → skip (fast path, no I/O)
    - **mtime changed** → compute SHA-256 → compare with `content_hash`
      - Hash unchanged → skip (file was touched but content identical)
-     - Hash changed → parse frontmatter for metadata (type, tags) → encrypt content → append `upsert` to mutation_queue
-   - **File not in snapshots** → new memory → parse frontmatter → encrypt → append `upsert` to mutation_queue
-4. For each snapshot entry with no matching file on disk → append `delete` to mutation_queue
+     - Hash changed → parse frontmatter for metadata (type, tags) → encrypt content → add `upsert` to mutations list
+   - **File not in snapshot** → new memory → parse frontmatter → encrypt → add `upsert` to mutations list
+4. For each snapshot entry with no matching file on disk → add `delete` to mutations list
+
+Mutations are held in memory, not persisted. If sync is interrupted, next sync re-diffs and regenerates them.
 
 ### 5.2 Push (Client → Server)
 
-Client sends mutations in batches. Server acknowledges each item individually, enabling safe retry on partial failure.
+Client sends mutations in batches. Server acknowledges each item individually.
 
 ```
 POST /v1/sync/push
@@ -306,7 +300,6 @@ Authorization: Bearer <token>
   "bot_id": "bot_abc",
   "changes": [
     {
-      "queue_id": 1,
       "action": "upsert",
       "file_path": "feedback_testing.md",
       "base_version": 3,
@@ -314,7 +307,6 @@ Authorization: Bearer <token>
       "metadata": { "type": "feedback", "tags": ["testing"] }
     },
     {
-      "queue_id": 2,
       "action": "delete",
       "file_path": "project/old_notes.md",
       "base_version": 1
@@ -325,17 +317,17 @@ Authorization: Bearer <token>
 Response:
 {
   "results": [
-    { "queue_id": 1, "status": "accepted", "new_version": 4 },
-    { "queue_id": 2, "status": "accepted" }
+    { "file_path": "feedback_testing.md", "status": "accepted", "new_version": 4 },
+    { "file_path": "project/old_notes.md", "status": "accepted" }
   ]
 }
 ```
 
 After receiving response:
-- Remove `acked` entries from mutation_queue
-- Update snapshots table with new version and content_hash
-- If network fails before response, entries remain in queue → retry on next sync
-- Server uses `file_path + base_version` for idempotent dedup (re-push is safe)
+- Update snapshot file with new versions and content hashes for accepted items
+- If network fails before response, next sync re-diffs and re-pushes (idempotent)
+- Server uses `file_path + base_version` for dedup (re-push is safe)
+- For new files (not in snapshot), `base_version` is `null` — server rejects if file already exists (e.g., created via dashboard)
 
 ### 5.3 Pull (Server → Client)
 
@@ -364,21 +356,22 @@ Response:
 Client processing:
 1. For each change, check if local memory already has same version → skip
 2. Decrypt content, write to local file
-3. Update snapshots table
-4. After all pages consumed, save `next_cursor` to sync_state
+3. Update snapshot entry for that file
+4. After all pages consumed, save `next_cursor` to snapshot file
 5. If interrupted, resume from last saved cursor
 
 ### 5.4 Full Sync Flow
 
 ```
 SDK sync():
-  1. Diff: scan files vs snapshots → generate mutations → write to mutation_queue
-  2. Push: loop through mutation_queue in batches
-     └── for each batch: POST /v1/sync/push → remove acked entries
+  1. Diff: scan files vs snapshot → generate mutations (in memory)
+  2. Push: send mutations in batches
+     └── for each batch: POST /v1/sync/push → save snapshot (atomic write)
   3. Pull: loop with cursor + pagination
-     └── for each page: GET /v1/sync/pull → decrypt → write files → update snapshots
-  4. Save new pull_cursor
+     └── for each page: GET /v1/sync/pull → decrypt → write files → save snapshot (atomic write)
 ```
+
+> Snapshot is saved after every batch/page (not just at the end) to avoid false conflicts if sync is interrupted midway. Each save is atomic (write temp file → rename).
 
 ### 5.5 Conflict Resolution
 
