@@ -127,8 +127,8 @@ The more common real-world scenario: Bot A and Bot B both have memories, user wa
 - Bot A does not need to be online -- its data is already on the server from previous syncs
 
 **API support needed:**
-- Existing memory endpoints accept `bot_id` query parameter for cross-bot reads
-- Server verifies both bots belong to the same user
+- Existing memory endpoints accept `ns` query parameter for cross-namespace reads (e.g., `GET /v1/memories?ns=bot_abc`)
+- Server verifies both namespaces belong to the same user
 
 ### 2.6 Memory Management (Dashboard)
 
@@ -324,16 +324,15 @@ Export is always **decrypted** (plaintext markdown) -- the whole point is portab
 
 ### 4.1 Default Resource Limits
 
-Configurable per deployment. These are the defaults for the hosted service:
+Configurable per deployment. These are the defaults:
 
 | Resource | Default |
 |----------|---------|
-| Bots per user | 2 |
-| Workspaces per user | 2 |
-| Memories per namespace | 30 |
-| Storage per user | 100 MB |
+| Namespaces per user (bot + workspace) | 10 |
+| Memories per namespace | Unlimited |
+| Storage per user | 1 GB |
 
-Self-hosted deployments can adjust these freely.
+Self-hosted deployments can adjust these freely. The hosted service may apply different limits per plan.
 
 ### 4.2 Rate Limits
 
@@ -423,7 +422,7 @@ Helps user understand what's happening across their bots without needing to chec
 ```
 Dashboard -> Settings -> Storage
 
-Used: 4.2 MB / 100 MB (free tier)
+Used: 4.2 MB / 1 GB
 
 By namespace:
   laptop-claw    2.8 MB (56 memories)

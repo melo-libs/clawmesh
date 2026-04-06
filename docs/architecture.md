@@ -215,7 +215,7 @@ If user changes master password:
 
 ## 4. Authentication
 
-Two authentication methods, unified under the same identity model.
+Three authentication methods, unified under the same identity model.
 
 ### 4.1 Bind Flow (Default, Recommended)
 
@@ -440,10 +440,10 @@ SDK sync():
 ### 5.5 Conflict Resolution
 
 - Server checks `base_version` on each push: if server version ≠ base_version, conflict detected
-- Default strategy: **Last-Write-Wins** (based on metadata `version`)
 - Server resolves conflicts using metadata only (content is encrypted, server cannot read it)
-- When conflict is detected, server keeps the winner and stores the loser as a conflict copy
-- User can review and resolve conflicts in dashboard (decrypted client-side)
+- When conflict is detected, server keeps its version (server wins) and stores the client's version as a conflict copy
+- MVP: conflicts are auto-resolved (server wins). Bot may notify user: "1 conflict detected"
+- Phase 3: dashboard provides UI to review conflict copies side-by-side and resolve manually
 - SDK provides conflict callback for programmatic resolution
 
 ### 5.6 Real-time Sync (Optional)
