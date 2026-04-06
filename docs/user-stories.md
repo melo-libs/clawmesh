@@ -322,18 +322,18 @@ Export is always **decrypted** (plaintext markdown) -- the whole point is portab
 
 ## 4. Limits and Quotas
 
-### 4.1 Free Tier
+### 4.1 Default Resource Limits
 
-| Resource | Free | Pro (future) |
-|----------|------|-------------|
-| Bots | 2 | Unlimited |
-| Workspaces | 2 | Unlimited |
-| Memories per namespace | 30 | Unlimited |
-| Storage per user | 100 MB | 10 GB |
-| Sync frequency | Every 5 min | Real-time (WebSocket) |
-| Snapshot inheritance | 3 per month | Unlimited |
+Configurable per deployment. These are the defaults for the hosted service:
 
-Memory files are curated knowledge, not auto-generated logs -- 30 per namespace is enough for 1-2 active projects on the free tier. Exceeding the limit is a natural upgrade signal.
+| Resource | Default |
+|----------|---------|
+| Bots per user | 2 |
+| Workspaces per user | 2 |
+| Memories per namespace | 30 |
+| Storage per user | 100 MB |
+
+Self-hosted deployments can adjust these freely.
 
 ### 4.2 Rate Limits
 
