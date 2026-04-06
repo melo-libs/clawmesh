@@ -219,6 +219,69 @@ User wants to change their master password.
 
 **Impact on bots:** None. Bots cache the DEK, not the master password. Since the DEK itself doesn't change (only its encrypted wrapper), all bots continue working without any action.
 
+### 2.10 Claude Code Integration (Workspace Sync)
+
+User uses Claude Code on multiple machines for the same project and wants memories synced automatically.
+
+**First machine setup:**
+
+```
+$ brew install clawmesh
+
+$ clawmesh login
+  Please open https://clawmesh.dev/device and enter code: ABCD-1234
+  Waiting for confirmation...
+  Logged in as voya.
+  Enter master password: ********
+  Done.
+
+$ cd ~/src/clawmesh
+$ clawmesh init
+  Detected Claude Code memory directory:
+    ~/.claude/projects/-Users-voya-src-clawmesh/memory/ (3 files)
+  Workspace name: clawmesh
+  Created workspace "clawmesh".
+  First sync complete. Uploaded 3 memories.
+```
+
+**Second machine (same project, different path):**
+
+```
+$ clawmesh login
+  ...
+$ cd ~/projects/clawmesh
+$ clawmesh init
+  Detected Claude Code memory directory:
+    ~/.claude/projects/-Users-voya-projects-clawmesh/memory/ (0 files)
+  Workspace name: clawmesh
+  Found existing workspace "clawmesh" with 5 memories.
+  Sync complete. Pulled 5 memories.
+```
+
+**Ongoing sync (via Claude Code hook):**
+
+Configure in `~/.claude/settings.json`:
+```json
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "command": "if [[ \"$CLAUDE_FILE_PATH\" == *\"/memory/\"* ]]; then clawmesh sync --quiet; fi"
+      }
+    ]
+  }
+}
+```
+
+Effect: every time Claude Code writes a memory file, ClawMesh syncs silently. User is completely unaware.
+
+**Design principles:**
+- Zero modification to Claude Code -- ClawMesh works at the file system level
+- `clawmesh init` auto-detects Claude Code's memory directory from the current project path
+- Workspace name is user-chosen, shared across machines by using the same name
+- Sync trigger is flexible: manual CLI, hook, or future daemon mode
+
 ## 3. Experience Principles
 
 1. **Invisible when working** -- sync happens silently, user only notices ClawMesh when they need it

@@ -12,19 +12,27 @@ ClawMesh is a cloud service that enables AI bots (OpenClaw and similar xxxclaw a
 
 ```
 User (human)
- ├── Bot A (openclaw on laptop)
+ ├── Workspace: clawmesh (shared, multi-device sync)
+ │    ├── CLI client on laptop
+ │    ├── CLI client on desktop
+ │    └── Memory[]
+ ├── Bot A (openclaw on laptop, independent)
  │    ├── Memory[]
  │    └── Skill[]
- ├── Bot B (openclaw on cloud server)
- │    ├── Memory[]
- │    └── Skill[]
- └── Bot C (nanoclaw on phone)
+ └── Bot B (openclaw on cloud server, independent)
       ├── Memory[]
       └── Skill[]
 ```
 
+Two types of namespaces:
+
+- **Workspace**: A shared namespace for syncing the same memories across multiple devices (e.g., Claude Code on laptop and desktop working on the same project). Multiple clients push/pull to the same namespace. Identified by `(user_id, workspace_name)`.
+- **Bot**: An independent namespace for a single AI agent instance. Each bot has its own memories. Cross-bot sharing is explicit via snapshot inheritance.
+
+Common concepts:
+
 - **User**: Human owner, via OAuth2 social login (GitHub/Google)
-- **Bot**: An AI agent instance belonging to a user, identified by unique bot_id
+- **Namespace**: Either a workspace or a bot. Server-side primary key for memories is `(namespace_id, file_path)`
 - **Memory**: A markdown document with frontmatter metadata
 - **Skill**: A skill definition file, synced as-is
 
@@ -51,7 +59,7 @@ The SDK parses frontmatter to extract `type` and `tags` as plaintext metadata fo
 
 | Column | Description |
 |--------|-------------|
-| `bot_id` | Owner bot (PK part 1) |
+| `namespace_id` | Owner namespace: workspace or bot (PK part 1) |
 | `file_path` | Relative path, e.g., `role.md`, `project/infra.md` (PK part 2). Must not contain `..` or start with `/` |
 | `version` | Monotonically increasing, server-assigned, for sync conflict detection |
 | `encrypted_content` | Ciphertext blob (nonce + ciphertext + auth_tag) |
@@ -75,7 +83,7 @@ format: mcp | plugin | script
 Skill definition content.
 ```
 
-**Server-side primary key:** `(bot_id, file_path)`
+**Server-side primary key:** `(namespace_id, file_path)`
 
 Skills are synced as opaque files. ClawMesh indexes metadata but does not interpret skill logic.
 
@@ -229,7 +237,21 @@ Bot                          ClawMesh                       User
 - Poll token: Single-use, expires in 10 minutes
 - Refresh token: Allows long-lived sessions without re-binding, revocable by user
 
-### 4.2 API Key (Developer/Advanced)
+### 4.2 CLI Login (OAuth Device Flow)
+
+For the ClawMesh CLI, used to sync workspace memories (e.g., Claude Code projects across devices).
+
+**Flow:**
+1. User runs `clawmesh login`
+2. CLI displays a URL and a device code
+3. User opens URL in browser, enters device code, completes GitHub OAuth
+4. CLI receives access_token + refresh_token
+5. User enters master password locally -> CLI derives DEK, caches it
+6. Done. CLI can now sync.
+
+This is standard OAuth 2.0 Device Authorization Grant (RFC 8628), same flow as `gh auth login`.
+
+### 4.3 API Key (Developer/Advanced)
 
 For debugging, CI/CD, and scripting scenarios.
 
@@ -239,7 +261,7 @@ For debugging, CI/CD, and scripting scenarios.
 - Supports scoping (read-only, sync-only, full)
 - Revocable anytime from dashboard
 
-### 4.3 Token Lifecycle
+### 4.4 Token Lifecycle
 
 ```
 Bind Flow ──→ access_token (short-lived, 1h)
@@ -248,6 +270,11 @@ Bind Flow ──→ access_token (short-lived, 1h)
                    ├── auto-refresh by SDK/plugin
                    ├── revocable by user in dashboard
                    └── re-bind required if refresh token expires
+
+CLI Login ──→ access_token (short-lived, 1h)
+               + refresh_token (long-lived, 90d)
+                   │
+                   └── same lifecycle as bind flow
 
 API Key ────→ static token (no expiry, revocable)
 ```
@@ -297,7 +324,7 @@ POST /v1/sync/push
 Authorization: Bearer <token>
 
 {
-  "bot_id": "bot_abc",
+  "namespace_id": "ws_clawmesh",
   "changes": [
     {
       "action": "upsert",
@@ -437,7 +464,7 @@ Every inherited memory carries an `origin` field:
 
 ```yaml
 origin:
-  bot_id: bot_abc
+  namespace_id: bot_abc
   file_path: role.md
   inherited_at: 2026-03-31T12:00:00Z
   grant_id: grant_xxx
@@ -467,8 +494,8 @@ This enables:
 |------|----------|----------|
 | SDK | TypeScript | JS/TS bot ecosystem integration |
 | SDK | Python | Python bot ecosystem integration |
-| CLI | Rust (cross-compile) | Terminal users, CI/CD |
-| MCP Server | TypeScript | OpenClaw and MCP-compatible bots |
+| CLI | Rust (cross-compile) | Workspace sync (Claude Code, etc.), terminal users, CI/CD |
+| MCP Server | TypeScript | Optional integration for MCP-compatible bots |
 | Skill/Plugin | Per bot platform | Install-and-use, zero code |
 
 ### 7.3 Storage
@@ -491,10 +518,14 @@ Estimated scale: memory files are typically 1-10KB. 1000 users × 1000 memories 
 ## 8. API Overview
 
 ```
-# Auth
+# Auth (Bot bind)
 POST   /v1/bind/request          # Bot initiates bind
 GET    /v1/bind/poll              # Bot polls for confirmation
 POST   /v1/bind/confirm           # User confirms bind
+
+# Auth (CLI login - OAuth Device Flow)
+POST   /v1/auth/device            # Start device auth, returns device_code + user_code
+POST   /v1/auth/device/token      # Poll for token after user completes browser auth
 POST   /v1/auth/refresh           # Refresh access_token using refresh_token
 
 # Encryption
@@ -507,9 +538,9 @@ POST   /v1/sync/push              # Push local changes (batched)
 GET    /v1/sync/pull              # Pull server changes (cursor + pagination)
 
 # Memories (CRUD, primarily for dashboard)
-GET    /v1/memories               # List memories (metadata only). ?bot_id= for cross-bot read (same user)
+GET    /v1/memories               # List memories (metadata only). ?ns= for cross-namespace read (same user)
 POST   /v1/memories               # Create memory
-GET    /v1/memories/*path         # Get single memory. ?bot_id= for cross-bot read (same user)
+GET    /v1/memories/*path         # Get single memory. ?ns= for cross-namespace read (same user)
 PATCH  /v1/memories/*path         # Update memory
 DELETE /v1/memories/*path         # Delete memory
 
@@ -522,7 +553,12 @@ POST   /v1/grants                 # Create share grant
 GET    /v1/grants                 # List grants
 DELETE /v1/grants/:id             # Revoke grant
 
-# Management
+# Workspaces
+POST   /v1/workspaces             # Create workspace
+GET    /v1/workspaces             # List user's workspaces
+DELETE /v1/workspaces/:name       # Delete workspace
+
+# Bots
 GET    /v1/bots                   # List user's bots
 PATCH  /v1/bots/:id              # Update bot info
 DELETE /v1/bots/:id               # Remove bot
@@ -539,25 +575,31 @@ WS     /v1/ws                     # Real-time sync channel
 - [ ] User registration (GitHub OAuth)
 - [ ] Master password setup + encrypted DEK storage
 - [ ] Bind flow authentication (with DEK delivery)
+- [ ] CLI login (OAuth Device Flow)
+- [ ] Workspace CRUD
 - [ ] Basic memory CRUD API (encrypted content)
 - [ ] TypeScript SDK + CLI (with client-side encryption)
+- [ ] CLI: `clawmesh login`, `clawmesh init`, `clawmesh sync`
 
 ### Phase 2: Sync
-- [ ] Incremental sync protocol
+- [ ] Incremental sync protocol (push/pull + diff)
 - [ ] Conflict detection and resolution
 - [ ] Skill sync
+- [ ] Claude Code hook integration
 - [ ] Python SDK
 
 ### Phase 3: Inheritance
 - [ ] ShareGrant model
 - [ ] Snapshot inheritance
 - [ ] Filter system
+- [ ] Cross-namespace memory read API
 
 ### Phase 4: Ecosystem
-- [ ] MCP Server
+- [ ] MCP Server (optional integration layer)
 - [ ] OpenClaw skill/plugin
 - [ ] Web dashboard
 - [ ] Real-time sync (WebSocket)
+- [ ] CLI daemon mode (background file watcher + auto-sync)
 
 ## 10. Open Questions
 
@@ -566,4 +608,5 @@ WS     /v1/ws                     # Real-time sync channel
 - Pricing model for cloud service (free tier limits)?
 - Master password strength requirements (minimum entropy)?
 - Should tags be encrypted too (trading off server-side filtering for full privacy)?
-- Multi-bot collaboration: messaging/events between bots, shared context, task delegation. Current architecture (WebSocket + auth model) is forward-compatible — design when use cases are clearer.
+- Multi-bot collaboration: messaging/events between bots, shared context, task delegation. Current architecture (WebSocket + auth model) is forward-compatible -- design when use cases are clearer.
+- DEK rotation (full re-encryption) for compromised device scenarios -- Phase 1 deferred.
