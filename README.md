@@ -1,10 +1,10 @@
-# ClawMesh
+# MemKeep
 
 Cloud-based memory and skills sync service for AI bots (OpenClaw and similar xxxclaw agents).
 
 ## Vision
 
-ClawMesh provides a cloud service that enables AI bots to securely sync their memories and skills, with support for cross-bot memory inheritance and selective synchronization.
+MemKeep provides a cloud service that enables AI bots to securely sync their memories and skills, with support for cross-bot memory inheritance and selective synchronization.
 
 ## Core Features
 
