@@ -1,4 +1,4 @@
-# ClawMesh User Stories & Flows
+# MemKeep User Stories & Flows
 
 > Version: 0.1.0 | Date: 2026-04-05 | Status: Draft
 
@@ -21,14 +21,14 @@ The most critical flow. Must feel as simple as setting up a password manager.
 
 **Steps:**
 
-1. User tells their bot: "Connect to ClawMesh, I'm voya"
+1. User tells their bot: "Connect to MemKeep, I'm voya"
 2. Bot initiates bind request, receives a verification code
-3. Bot displays: "Your code is MESH-7829. Go to clawmesh.dev to sign up and confirm."
-4. User opens clawmesh.dev:
+3. Bot displays: "Your code is MK-7829. Go to memkeep.ai to sign up and confirm."
+4. User opens memkeep.ai:
    - Signs in with GitHub (one-click)
    - Sets a master password (prompted: "This protects all your bot memories")
    - Saves Recovery Key (prompted: "Save this somewhere safe — it's the only way to recover if you forget your password")
-   - Enters verification code MESH-7829 to confirm the bind
+   - Enters verification code MK-7829 to confirm the bind
 5. User returns to bot, provides master password when prompted
 6. Bot derives DEK, starts syncing
 7. Bot confirms: "Connected! I'll sync your memories automatically from now on."
@@ -41,7 +41,7 @@ The most critical flow. Must feel as simple as setting up a password manager.
 
 ### 2.2 Day-to-Day Sync (Invisible)
 
-After setup, the user should not think about ClawMesh at all.
+After setup, the user should not think about MemKeep at all.
 
 **Trigger options (SDK configurable):**
 - Timer-based: every N minutes (default: 5 min)
@@ -60,10 +60,10 @@ User sets up a new device or bot instance.
 
 **Steps:**
 
-1. User tells the new bot: "Connect to ClawMesh, I'm voya"
-2. Bot initiates bind, displays code: MESH-4521
+1. User tells the new bot: "Connect to MemKeep, I'm voya"
+2. Bot initiates bind, displays code: MK-4521
 3. User receives a notification (dashboard / email / push):
-   "New bot 'server-claw' is requesting access. Code: MESH-4521. Approve?"
+   "New bot 'server-claw' is requesting access. Code: MK-4521. Approve?"
 4. User taps [Approve]
 5. User provides master password to the new bot
 6. Bot obtains DEK, starts syncing
@@ -198,7 +198,7 @@ User loses a device or wants to remove a bot's access.
 2. Dashboard warns: "This will revoke all access tokens for this bot. Its local data remains on the device but it can no longer sync."
 3. User confirms
 4. Server immediately invalidates the bot's access_token and refresh_token
-5. Bot's next sync attempt fails with 401 -> bot notifies user: "ClawMesh access was revoked. Re-bind if needed."
+5. Bot's next sync attempt fails with 401 -> bot notifies user: "MemKeep access was revoked. Re-bind if needed."
 
 **If the device is compromised:**
 - Revoking the bot stops sync access, but the DEK is cached locally on the device
@@ -226,35 +226,35 @@ User uses Claude Code on multiple machines for the same project and wants memori
 **First machine setup:**
 
 ```
-$ brew install clawmesh
+$ brew install memkeep
 
-$ clawmesh login
-  Please open https://clawmesh.dev/device and enter code: ABCD-1234
+$ memkeep login
+  Please open https://memkeep.ai/device and enter code: ABCD-1234
   Waiting for confirmation...
   Logged in as voya.
   Enter master password: ********
   Done.
 
-$ cd ~/src/clawmesh
-$ clawmesh init
+$ cd ~/src/memkeep
+$ memkeep init
   Detected Claude Code memory directory:
-    ~/.claude/projects/-Users-voya-src-clawmesh/memory/ (3 files)
-  Workspace name: clawmesh
-  Created workspace "clawmesh".
+    ~/.claude/projects/-Users-voya-src-memkeep/memory/ (3 files)
+  Workspace name: memkeep
+  Created workspace "memkeep".
   First sync complete. Uploaded 3 memories.
 ```
 
 **Second machine (same project, different path):**
 
 ```
-$ clawmesh login
+$ memkeep login
   ...
-$ cd ~/projects/clawmesh
-$ clawmesh init
+$ cd ~/projects/memkeep
+$ memkeep init
   Detected Claude Code memory directory:
-    ~/.claude/projects/-Users-voya-projects-clawmesh/memory/ (0 files)
-  Workspace name: clawmesh
-  Found existing workspace "clawmesh" with 5 memories.
+    ~/.claude/projects/-Users-voya-projects-memkeep/memory/ (0 files)
+  Workspace name: memkeep
+  Found existing workspace "memkeep" with 5 memories.
   Sync complete. Pulled 5 memories.
 ```
 
@@ -267,18 +267,18 @@ Configure in `~/.claude/settings.json`:
     "PostToolUse": [
       {
         "matcher": "Write|Edit",
-        "command": "if [[ \"$CLAUDE_FILE_PATH\" == *\"/memory/\"* ]]; then clawmesh sync --quiet; fi"
+        "command": "if [[ \"$CLAUDE_FILE_PATH\" == *\"/memory/\"* ]]; then memkeep sync --quiet; fi"
       }
     ]
   }
 }
 ```
 
-Effect: every time Claude Code writes a memory file, ClawMesh syncs silently. User is completely unaware.
+Effect: every time Claude Code writes a memory file, MemKeep syncs silently. User is completely unaware.
 
 **Design principles:**
-- Zero modification to Claude Code -- ClawMesh works at the file system level
-- `clawmesh init` auto-detects Claude Code's memory directory from the current project path
+- Zero modification to Claude Code -- MemKeep works at the file system level
+- `memkeep init` auto-detects Claude Code's memory directory from the current project path
 - Workspace name is user-chosen, shared across machines by using the same name
 - Sync trigger is flexible: manual CLI, hook, or future daemon mode
 
@@ -300,12 +300,12 @@ export_2026-04-05/
     role.md
     feedback_testing.md
     project/infra.md
-  ws_clawmesh/
+  ws_memkeep/
     MEMORY.md
-    project_clawmesh.md
+    project_memkeep.md
 ```
 
-Export is always **decrypted** (plaintext markdown) -- the whole point is portability. Optionally offer encrypted backup for migration to another ClawMesh instance.
+Export is always **decrypted** (plaintext markdown) -- the whole point is portability. Optionally offer encrypted backup for migration to another MemKeep instance.
 
 ### 3.2 Account Deletion
 
@@ -363,10 +363,10 @@ SDK handles 429 automatically with exponential backoff.
 | Server unreachable | Works normally with local memories. Queues changes. Subtle status: "Sync pending" | Shows cached data if available, or "Server unavailable, retrying..." |
 | Sync push fails | Retry with exponential backoff (1s, 2s, 4s... cap 5min). No user interruption | N/A |
 | Sync pull fails | Use local data. Retry on next sync cycle | N/A |
-| Auth token expired | SDK auto-refreshes. If refresh fails, bot notifies: "Please re-authenticate with ClawMesh" | Redirect to login |
+| Auth token expired | SDK auto-refreshes. If refresh fails, bot notifies: "Please re-authenticate with MemKeep" | Redirect to login |
 | Master password wrong | "Incorrect password. Please try again." (verified via Password Verify Hash before attempting DEK decryption) | Same, with retry limit (5 attempts, then cooldown) |
 | Conflict detected | Server auto-resolves, stores conflict copy. Bot may mention: "1 memory conflict detected, resolve in dashboard" | Show in conflicts list |
-| Storage quota exceeded | Push rejected with clear error. Bot: "ClawMesh storage full. Clean up old memories or upgrade." | Banner: "Storage 98% full" |
+| Storage quota exceeded | Push rejected with clear error. Bot: "MemKeep storage full. Clean up old memories or upgrade." | Banner: "Storage 98% full" |
 
 ### 5.3 Retry Strategy
 
@@ -396,7 +396,7 @@ Bots:
   phone-claw      [yellow] Last sync: 3 days ago   8 memories
 
 Workspaces:
-  clawmesh        [green]  Last sync: 5 min ago    5 memories  (2 devices)
+  memkeep         [green]  Last sync: 5 min ago    5 memories  (2 devices)
 ```
 
 Color coding:
@@ -410,7 +410,7 @@ Color coding:
 Dashboard -> Activity
 
 2026-04-05 14:30  laptop-claw    pushed 2 memories
-2026-04-05 14:25  ws_clawmesh    pulled 1 memory (from desktop)
+2026-04-05 14:25  ws_memkeep    pulled 1 memory (from desktop)
 2026-04-05 13:00  server-claw    conflict detected: project/infra.md
 2026-04-05 10:00  new-phone-claw bound successfully
 ```
@@ -427,15 +427,15 @@ Used: 4.2 MB / 1 GB
 By namespace:
   laptop-claw    2.8 MB (56 memories)
   server-claw    0.6 MB (12 memories)
-  ws_clawmesh    0.3 MB (5 memories)
+  ws_memkeep    0.3 MB (5 memories)
   phone-claw     0.5 MB (8 memories)
 ```
 
 ## 7. Experience Principles
 
-1. **Invisible when working** -- sync happens silently, user only notices ClawMesh when they need it
+1. **Invisible when working** -- sync happens silently, user only notices MemKeep when they need it
 2. **User always decides** -- no automatic overwrites, no silent merges. Bot suggests, user approves
-3. **Bot does the thinking** -- bots can understand memory content semantically, not just diff bytes. This is ClawMesh's advantage over traditional sync tools
+3. **Bot does the thinking** -- bots can understand memory content semantically, not just diff bytes. This is MemKeep's advantage over traditional sync tools
 4. **Master password once** -- entered once per device/session, not on every operation
 5. **Dashboard for overview, bot for action** -- dashboard gives the bird's eye view across all bots; individual bots handle conversational operations
 6. **Local-first** -- local data is always accessible, server is a sync enhancement not a dependency

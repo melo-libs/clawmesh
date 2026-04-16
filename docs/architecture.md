@@ -1,19 +1,19 @@
-# ClawMesh Architecture Design
+# MemKeep Architecture Design
 
 > Version: 0.3.0 | Date: 2026-04-05 | Status: Draft
 
 ## 1. Overview
 
-ClawMesh is a cloud service that enables AI bots (OpenClaw and similar xxxclaw agents) to securely sync their memories and skills, with support for cross-bot memory inheritance and selective synchronization.
+MemKeep is a cloud service that enables AI bots (OpenClaw and similar xxxclaw agents) to securely sync their memories and skills, with support for cross-bot memory inheritance and selective synchronization.
 
 ### Long-Term Vision: Memory-as-a-Service
 
-ClawMesh starts as a sync tool for AI bot memories, but the long-term vision is broader: **become the memory infrastructure layer for AI agents.**
+MemKeep starts as a sync tool for AI bot memories, but the long-term vision is broader: **become the memory infrastructure layer for AI agents.**
 
-Any AI application needs persistent memory — remembering user preferences, project context, learned behaviors across sessions. Building this well (E2E encryption, sync, conflict resolution) is hard. ClawMesh aims to provide this as a service:
+Any AI application needs persistent memory — remembering user preferences, project context, learned behaviors across sessions. Building this well (E2E encryption, sync, conflict resolution) is hard. MemKeep aims to provide this as a service:
 
 - **Phase A (current):** Developer tool -- sync memories across your own bots and devices
-- **Phase B:** Memory-as-a-Service API -- any AI application can use ClawMesh as its persistent memory backend
+- **Phase B:** Memory-as-a-Service API -- any AI application can use MemKeep as its persistent memory backend
 - **Phase C:** Enterprise agent management -- centralized memory management for fleets of AI agents
 - **Phase D:** Agent collaboration -- enable AI agents to share context and collaborate in real-time
 
@@ -25,7 +25,7 @@ The current architecture is designed to support this evolution. The namespace mo
 
 ```
 User (human)
- ├── Workspace: clawmesh (shared, multi-device sync)
+ ├── Workspace: memkeep (shared, multi-device sync)
  │    ├── CLI client on laptop
  │    ├── CLI client on desktop
  │    └── Memory[]
@@ -98,7 +98,7 @@ Skill definition content.
 
 **Server-side primary key:** `(namespace_id, file_path)`
 
-Skills are synced as opaque files. ClawMesh indexes metadata but does not interpret skill logic.
+Skills are synced as opaque files. MemKeep indexes metadata but does not interpret skill logic.
 
 ## 3. Encryption
 
@@ -146,7 +146,7 @@ Three types of clients, same key system:
 | Client | How it gets the DEK | When it decrypts |
 |--------|---------------------|------------------|
 | Bot | User provides master password during bind, DEK derived and cached locally | Each sync |
-| CLI | User provides master password during `clawmesh login`, DEK cached locally | Each sync |
+| CLI | User provides master password during `memkeep login`, DEK cached locally | Each sync |
 | Dashboard | User enters master password after login, DEK held in memory for session | Browsing/editing |
 
 **Bot flow:**
@@ -210,7 +210,7 @@ If user changes master password:
 | Device physically compromised | Cached DEK can be extracted from local storage. Attacker can decrypt all synced content | Phase 1: revoke bot access (stops future sync). Future: DEK rotation (re-encrypt all content with new DEK) |
 | Weak master password | Argon2id slows brute force but cannot prevent it for very weak passwords (e.g., "123456") | Enforce minimum password strength at registration. Future: support hardware keys (FIDO2) |
 | Metadata analysis | Tags, types, file paths, timestamps are plaintext. Attacker can infer topics without reading content | Accepted trade-off for server-side filtering. Future: encrypted tags (see Open Questions) |
-| Malicious bot/SDK | A compromised bot with valid DEK could exfiltrate all memories | Out of scope -- bot security is the bot platform's responsibility, not ClawMesh's |
+| Malicious bot/SDK | A compromised bot with valid DEK could exfiltrate all memories | Out of scope -- bot security is the bot platform's responsibility, not MemKeep's |
 | Side-channel attacks on clients | Timing attacks on Argon2id, memory dumps during decryption | Standard platform security. Out of scope for Phase 1 |
 
 ## 4. Authentication
@@ -219,19 +219,19 @@ Three authentication methods, unified under the same identity model.
 
 ### 4.1 Bind Flow (Default, Recommended)
 
-The primary method. User tells the bot to connect, then confirms in ClawMesh.
+The primary method. User tells the bot to connect, then confirms in MemKeep.
 
 **User experience:**
 
-1. User tells bot: "Connect to ClawMesh, I'm voya"
+1. User tells bot: "Connect to MemKeep, I'm voya"
 2. Bot displays a verification code
-3. User confirms the code in ClawMesh dashboard/notification
+3. User confirms the code in MemKeep dashboard/notification
 4. Done. Bot starts syncing.
 
 **Protocol:**
 
 ```
-Bot                          ClawMesh                       User
+Bot                          MemKeep                       User
  |                               |                            |
  |-- POST /v1/bind/request ----> |                            |
  |   { username: "voya",         |                            |
@@ -244,11 +244,11 @@ Bot                          ClawMesh                       User
  |   }                           |                            |
  |                               |-- Notify: bind request --> |
  |<-- 200 OK                     |   (email/push/dashboard)   |
- |   { bind_code: "MESH-7829",  |                            |
+ |   { bind_code: "MK-7829",  |                            |
  |     poll_token: "pt_xxx",    |                            |
  |     expires_in: 600 }        |                            |
  |                               |                            |
- |   (bot displays MESH-7829)    |   (user verifies code)     |
+ |   (bot displays MK-7829)    |   (user verifies code)     |
  |                               |                            |
  |                               | <-- POST /v1/bind/confirm  |
  |                               |     { bind_code, user_auth}|
@@ -276,10 +276,10 @@ Bot                          ClawMesh                       User
 
 ### 4.2 CLI Login (OAuth Device Flow)
 
-For the ClawMesh CLI, used to sync workspace memories (e.g., Claude Code projects across devices).
+For the MemKeep CLI, used to sync workspace memories (e.g., Claude Code projects across devices).
 
 **Flow:**
-1. User runs `clawmesh login`
+1. User runs `memkeep login`
 2. CLI displays a URL and a device code
 3. User opens URL in browser, enters device code, completes GitHub OAuth
 4. CLI receives access_token + refresh_token
@@ -293,8 +293,8 @@ This is standard OAuth 2.0 Device Authorization Grant (RFC 8628), same flow as `
 For debugging, CI/CD, and scripting scenarios.
 
 - User generates API Key in dashboard under "Developer Settings"
-- Key format: `cmesh_sk_<random>`, long-lived
-- Sent as `Authorization: Bearer cmesh_sk_...`
+- Key format: `mk_sk_<random>`, long-lived
+- Sent as `Authorization: Bearer mk_sk_...`
 - Supports scoping (read-only, sync-only, full)
 - Revocable anytime from dashboard
 
@@ -324,7 +324,7 @@ Push and pull are separate operations. Push uploads local changes to the server;
 
 Bots manage memories as local files (markdown with frontmatter). The SDK detects changes by diffing current files against a local snapshot, without requiring the bot to call SDK APIs for every write.
 
-**Local storage:** A single JSON snapshot file (e.g., `.clawmesh/sync.json`). No SQLite or other database dependency.
+**Local storage:** A single JSON snapshot file (e.g., `.memkeep/sync.json`). No SQLite or other database dependency.
 
 ```json
 {
@@ -361,7 +361,7 @@ POST /v1/sync/push
 Authorization: Bearer <token>
 
 {
-  "namespace_id": "ws_clawmesh",
+  "namespace_id": "ws_memkeep",
   "changes": [
     {
       "action": "upsert",
@@ -449,7 +449,7 @@ SDK sync():
 ### 5.6 Real-time Sync (Optional)
 
 - WebSocket connection for push-based notifications
-- Bot connects to `wss://api.clawmesh.dev/v1/ws`
+- Bot connects to `wss://api.memkeep.ai/v1/ws`
 - Server pushes change notifications (bot then pulls via normal flow)
 - Falls back to periodic polling if WebSocket unavailable
 
@@ -623,7 +623,7 @@ Goal: user can register, bind a bot, and sync memories across devices.
 - [ ] Sync protocol: push/pull with diff-based change detection
 - [ ] Conflict detection (server version wins, store conflict copy)
 - [ ] TypeScript SDK (client-side encryption, diff, sync)
-- [ ] CLI: `clawmesh login`, `clawmesh init`, `clawmesh sync`
+- [ ] CLI: `memkeep login`, `memkeep init`, `memkeep sync`
 
 ### Phase 2: Cross-Bot Sharing + Ecosystem
 Goal: knowledge sharing between bots, broader tool integration.
