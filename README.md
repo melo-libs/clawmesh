@@ -1,23 +1,33 @@
 # MemKeep
 
-Cloud-based memory and skills sync service for AI bots (OpenClaw and similar xxxclaw agents).
+**Memory-as-a-Service for AI agents.**
 
-## Vision
+AI agents are everywhere, but their memory is nowhere. Every team reinvents the same hard problems: encryption, sync, conflict resolution, knowledge sharing. MemKeep handles all of it — end-to-end encrypted, open source, designed to plug into any agent stack via SDK and CLI.
 
-MemKeep provides a cloud service that enables AI bots to securely sync their memories and skills, with support for cross-bot memory inheritance and selective synchronization.
+## Use cases
 
-## Core Features
+- **Cross-device continuity** — Your Claude Code remembers project context whether you're on laptop or desktop
+- **Team knowledge sharing** — Customer support agents share learned patterns instead of each starting from zero
+- **Onboard new agents fast** — Spin up a new agent pre-loaded with relevant memories from your best-performing one
 
-- **Bot Authentication** — Credential-based bot authorization and identity verification
-- **Memory Sync** — Auto-sync bot memories to the cloud
-- **Skills Sync** — Auto-sync bot skills to the cloud
-- **Memory Inheritance** — User-authorized memory sharing between bots
-- **Selective Sync** — Fine-grained control over what gets synced and shared
+## Roadmap
+
+| Phase | Goal |
+|-------|------|
+| **MVP** | Register, bind an agent, sync memories across devices |
+| **Phase 2** | Cross-agent sharing, skill sync, ecosystem SDKs |
+| **Phase 3** | Web dashboard, real-time sync, conflict resolution UI |
+| **Phase 4** | Memory-as-a-Service API for third-party AI platforms |
 
 ## Status
 
-Early stage — architecture and design in progress.
+Early stage — architecture and design complete, implementation starting. Contributions and feedback welcome via [Issues](https://github.com/melo-libs/memkeep/issues).
+
+## Docs
+
+- [Architecture](docs/architecture.md)
+- [User Stories](docs/user-stories.md)
 
 ## License
 
-TBD
+[MIT](LICENSE)
