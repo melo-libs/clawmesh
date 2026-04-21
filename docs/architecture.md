@@ -1,69 +1,41 @@
 # MemKeep Architecture Design
 
-> Version: 0.3.0 | Date: 2026-04-05 | Status: Draft
+> Version: 0.6.0 | Date: 2026-04-21 | Status: Draft
 
 ## 1. Overview
 
-MemKeep is a cloud service that enables AI bots (OpenClaw and similar xxxclaw agents) to securely sync their memories and skills, with support for cross-bot memory inheritance and selective synchronization.
-
-### Long-Term Vision: Memory-as-a-Service
-
-MemKeep starts as a sync tool for AI bot memories, but the long-term vision is broader: **become the memory infrastructure layer for AI agents.**
-
-Any AI application needs persistent memory — remembering user preferences, project context, learned behaviors across sessions. Building this well (E2E encryption, sync, conflict resolution) is hard. MemKeep aims to provide this as a service:
-
-- **Phase A (current):** Developer tool -- sync memories across your own bots and devices
-- **Phase B:** Memory-as-a-Service API -- any AI application can use MemKeep as its persistent memory backend
-- **Phase C:** Enterprise agent management -- centralized memory management for fleets of AI agents
-- **Phase D:** Agent collaboration -- enable AI agents to share context and collaborate in real-time
-
-The current architecture is designed to support this evolution. The namespace model, E2E encryption, and sync protocol are general enough to serve both individual developers and third-party AI platforms.
+This document defines the technical architecture of MemKeep: identity model, end-to-end encryption, authentication, sync protocol, memory copy, and tech stack. The architecture is general enough to serve individual developers (MVP) and scale into a third-party MaaS API (Phase 4).
 
 ## 2. Core Concepts
 
 ### 2.1 Identity Model
 
-```
-User (human)
- ├── Workspace: memkeep (shared, multi-device sync)
- │    ├── CLI client on laptop
- │    ├── CLI client on desktop
- │    └── Memory[]
- ├── Bot A (openclaw on laptop, independent)
- │    ├── Memory[]
- │    └── Skill[]
- └── Bot B (openclaw on cloud server, independent)
-      ├── Memory[]
-      └── Skill[]
-```
+Data belongs to one of two entity types:
 
-Two types of namespaces:
+- **Project**: Project-centric knowledge. Identified by `(user_id, project_name)`, name unique per account.
+- **Agent**: Agent-centric knowledge. Agents can join Projects (permission model: gains read/write access to Project documents).
 
-- **Workspace**: A shared namespace for syncing the same memories across multiple devices (e.g., Claude Code on laptop and desktop working on the same project). Multiple clients push/pull to the same namespace. Identified by `(user_id, workspace_name)`.
-- **Bot**: An independent namespace for a single AI agent instance. Each bot has its own memories. Cross-bot sharing is explicit via snapshot inheritance.
-
-Common concepts:
+Core concepts:
 
 - **User**: Human owner, via OAuth2 social login (GitHub/Google)
-- **Namespace**: Either a workspace or a bot. Server-side primary key for memories is `(namespace_id, file_path)`
-- **Memory**: A markdown document with frontmatter metadata
-- **Skill**: A skill definition file, synced as-is
+- **Document**: Encrypted file with metadata (unified storage primitive). Belongs to one Project or Agent. Server-side primary key is `(owner_id, file_path)`, where `owner_id` refers to the owning Project or Agent.
+- **Document metadata**: type (memory | context | conversation | skill), tags, ttl, source. Recommended format is Markdown + frontmatter, not enforced.
 
-### 2.2 Memory Data Model
+### 2.2 Document Data Model
 
-Memories are stored as markdown files with frontmatter, keeping compatibility with the bot ecosystem (OpenClaw SOUL.md, Claude Code memory, etc.).
+Documents are stored as markdown files with frontmatter (recommended but not enforced), maintaining compatibility with the agent ecosystem (OpenClaw SOUL.md, Claude Code memory, etc.).
 
-Each memory is identified by its **file path** (relative to the memory directory), scoped per namespace. No separate ID is needed.
+Each Document is identified by its **file path** (relative to the memory directory), scoped by owning Project or Agent. No separate ID is needed.
 
-**Local file (what the bot reads/writes):**
+**Local file (what the agent reads/writes):**
 
 ```markdown
 ---
-type: user | feedback | project | reference
+type: memory | context | conversation | skill
 tags: [testing, ci]
 ---
 
-Memory content in markdown format.
+Document content in markdown format.
 ```
 
 The SDK parses frontmatter to extract `type` and `tags` as plaintext metadata for sync. The **entire file** (including frontmatter) is encrypted as a single blob before upload. This way the server has plaintext metadata for filtering, and the client can reconstruct the original file exactly on pull.
@@ -72,37 +44,19 @@ The SDK parses frontmatter to extract `type` and `tags` as plaintext metadata fo
 
 | Column | Description |
 |--------|-------------|
-| `namespace_id` | Owner namespace: workspace or bot (PK part 1) |
+| `owner_id` | Owning Project or Agent ID (PK part 1) |
 | `file_path` | Relative path, e.g., `role.md`, `project/infra.md` (PK part 2). Must not contain `..` or start with `/` |
 | `version` | Monotonically increasing, server-assigned, for sync conflict detection |
 | `encrypted_content` | Ciphertext blob (nonce + ciphertext + auth_tag) |
-| `type` | Memory category, extracted from frontmatter |
+| `type` | Document category (memory | context | conversation | skill), extracted from frontmatter |
 | `tags` | Labels for filtering, extracted from frontmatter |
 | `created_at` | Server-assigned |
 | `updated_at` | Server-assigned |
-| `origin` | Non-null if inherited from another bot (see Section 6.4) |
-
-### 2.3 Skill Data Model
-
-Skills are also identified by file path, same as memories.
-
-```markdown
----
-name: web-search
-skill_version: 1.2.0
-format: mcp | plugin | script
----
-
-Skill definition content.
-```
-
-**Server-side primary key:** `(namespace_id, file_path)`
-
-Skills are synced as opaque files. MemKeep indexes metadata but does not interpret skill logic.
+| `origin` | Non-null if copied from another Project/Agent (see Section 6.4) |
 
 ## 3. Encryption
 
-All memory and skill content is end-to-end encrypted. The server never sees plaintext.
+All Document content is end-to-end encrypted. The server never sees plaintext.
 
 ### 3.1 Key Architecture
 
@@ -123,9 +77,9 @@ Master Password (user remembers, never uploaded)
 - **DEK**: Random 256-bit key, generated at registration. Wrapped with Master Key using AES-256-GCM, stored on server. Used for all content encryption.
 - **Password Verify Hash**: Derived from Master Key via HKDF. Stored on server to let clients verify master password correctness before attempting DEK decryption.
 
-### 3.2 Per-Memory Encryption
+### 3.2 Per-Document Encryption
 
-Each memory is encrypted individually, compatible with incremental sync and per-memory inheritance.
+Each Document is encrypted individually, compatible with incremental sync and per-document copy.
 
 **Encrypt (client-side):**
 1. Generate random 96-bit nonce
@@ -145,33 +99,33 @@ Three types of clients, same key system:
 
 | Client | How it gets the DEK | When it decrypts |
 |--------|---------------------|------------------|
-| Bot | User provides master password during bind, DEK derived and cached locally | Each sync |
+| Agent | User provides master password during bind, DEK derived and cached locally | Each sync |
 | CLI | User provides master password during `memkeep login`, DEK cached locally | Each sync |
 | Dashboard | User enters master password after login, DEK held in memory for session | Browsing/editing |
 
-**Bot flow:**
-1. During bind, user provides master password to bot
-2. Bot derives Master Key → verifies via Password Verify Hash → downloads encrypted DEK → decrypts DEK
-3. Bot caches DEK locally (platform secure storage: Keychain on macOS, keyring on Linux)
-4. On sync: encrypt each memory with DEK before upload, decrypt after download
+**Agent flow:**
+1. During bind, user provides master password to agent
+2. Agent derives Master Key → verifies via Password Verify Hash → downloads encrypted DEK → decrypts DEK
+3. Agent caches DEK locally (platform secure storage: Keychain on macOS, keyring on Linux)
+4. On sync: encrypt each Document with DEK before upload, decrypt after download
 
 **Dashboard flow:**
 1. User logs in via OAuth (gets access to account)
 2. User enters master password → client-side JS derives Master Key → verifies → decrypts DEK
-3. Memories decrypted and displayed in browser
+3. Documents decrypted and displayed in browser
 4. Edits encrypted in browser before upload
 
 ### 3.4 What the Server Sees
 
 | Data | Server visibility |
 |------|-------------------|
-| Memory/skill content | Ciphertext only (nonce + ciphertext + auth_tag) |
-| Memory metadata (file_path, type, tags, version, timestamps) | Plaintext (for indexing, filtering, conflict resolution) |
+| Document content | Ciphertext only (nonce + ciphertext + auth_tag) |
+| Document metadata (file_path, type, tags, version, timestamps) | Plaintext (for indexing, filtering, conflict resolution) |
 | Encrypted DEK | Stored but cannot decrypt |
 | Password Verify Hash | Stored, used for verification only |
 | Master Password / Master Key / DEK | Never |
 
-> **Note:** Tags and type metadata are stored in plaintext to enable server-side filtering for sync and inheritance. Users should be aware that metadata is not encrypted.
+> **Note:** Tags and type metadata are stored in plaintext to enable server-side filtering for sync and copy. Users should be aware that metadata is not encrypted.
 
 ### 3.5 Recovery
 
@@ -188,7 +142,7 @@ If user changes master password:
 2. Re-encrypt DEK with new Master Key
 3. Derive new Password Verify Hash, upload together with new encrypted DEK
 4. Content is NOT re-encrypted (DEK stays the same, only its wrapper changes)
-5. All bots continue working (they cache the DEK, not the Master Key)
+5. All agents continue working (they cache the DEK, not the Master Key)
 
 ### 3.7 Security Threat Model
 
@@ -203,14 +157,14 @@ If user changes master password:
 | Token theft (attacker steals access_token) | Short-lived (1h), auto-refresh. Revocable in dashboard | Partial. Attacker has access until token expires or is revoked |
 | Replay attacks on sync | base_version checking, server-assigned versions | Full |
 
-**What we do NOT protect against (Phase 1):**
+**What we do NOT protect against (MVP):**
 
 | Threat | Risk | Mitigation path |
 |--------|------|----------------|
-| Device physically compromised | Cached DEK can be extracted from local storage. Attacker can decrypt all synced content | Phase 1: revoke bot access (stops future sync). Future: DEK rotation (re-encrypt all content with new DEK) |
+| Device physically compromised | Cached DEK can be extracted from local storage. Attacker can decrypt all synced content | Phase 1: revoke agent access (stops future sync). Future: DEK rotation (re-encrypt all content with new DEK) |
 | Weak master password | Argon2id slows brute force but cannot prevent it for very weak passwords (e.g., "123456") | Enforce minimum password strength at registration. Future: support hardware keys (FIDO2) |
 | Metadata analysis | Tags, types, file paths, timestamps are plaintext. Attacker can infer topics without reading content | Accepted trade-off for server-side filtering. Future: encrypted tags (see Open Questions) |
-| Malicious bot/SDK | A compromised bot with valid DEK could exfiltrate all memories | Out of scope -- bot security is the bot platform's responsibility, not MemKeep's |
+| Malicious agent/SDK | A compromised agent with valid DEK could exfiltrate all Documents | Out of scope -- agent security is the agent platform's responsibility, not MemKeep's |
 | Side-channel attacks on clients | Timing attacks on Argon2id, memory dumps during decryption | Standard platform security. Out of scope for Phase 1 |
 
 ## 4. Authentication
@@ -219,24 +173,24 @@ Three authentication methods, unified under the same identity model.
 
 ### 4.1 Bind Flow (Default, Recommended)
 
-The primary method. User tells the bot to connect, then confirms in MemKeep.
+The primary method. User tells the agent to connect, then confirms in MemKeep.
 
 **User experience:**
 
-1. User tells bot: "Connect to MemKeep, I'm voya"
-2. Bot displays a verification code
+1. User tells agent: "Connect to MemKeep, I'm voya"
+2. Agent displays a verification code
 3. User confirms the code in MemKeep dashboard/notification
-4. Done. Bot starts syncing.
+4. Done. Agent starts syncing.
 
 **Protocol:**
 
 ```
-Bot                          MemKeep                       User
+Agent                        MemKeep                       User
  |                               |                            |
  |-- POST /v1/bind/request ----> |                            |
  |   { username: "voya",         |                            |
- |     bot_name: "my-claw",     |                            |
- |     bot_meta: {               |                            |
+ |     agent_name: "aria",       |                            |
+ |     agent_meta: {             |                            |
  |       agent_type: "openclaw", |                            |
  |       platform: "macos",      |                            |
  |       version: "1.2.0"        |                            |
@@ -248,7 +202,7 @@ Bot                          MemKeep                       User
  |     poll_token: "pt_xxx",    |                            |
  |     expires_in: 600 }        |                            |
  |                               |                            |
- |   (bot displays MK-7829)    |   (user verifies code)     |
+ |   (agent displays MK-7829)  |   (user verifies code)     |
  |                               |                            |
  |                               | <-- POST /v1/bind/confirm  |
  |                               |     { bind_code, user_auth}|
@@ -258,32 +212,32 @@ Bot                          MemKeep                       User
  |<-- 200 OK                     |                            |
  |   { access_token: "at_xxx",  |                            |
  |     refresh_token: "rt_xxx", |                            |
- |     bot_id: "bot_abc" }      |                            |
+ |     agent_id: "agent_abc" }  |                            |
 ```
 
-**After bind succeeds, bot obtains DEK:**
-1. Bot receives access_token + refresh_token from poll
-2. User provides master password locally to the bot
-3. Bot calls `GET /v1/keys/dek` to download encrypted DEK
-4. Bot derives Master Key from password → decrypts DEK → caches DEK locally
-5. Bot is now ready to sync (see Section 3.3 for details)
+**After bind succeeds, agent obtains DEK:**
+1. Agent receives access_token + refresh_token from poll
+2. User provides master password locally to the agent
+3. Agent calls `GET /v1/keys/dek` to download encrypted DEK
+4. Agent derives Master Key from password → decrypts DEK → caches DEK locally
+5. Agent is now ready to sync (see Section 3.3 for details)
 
 **Security guarantees:**
-- Verification code: User confirms bot-displayed code matches dashboard, prevents impersonation
+- Verification code: User confirms agent-displayed code matches dashboard, prevents impersonation
 - User-initiated confirmation: No confirmation = no binding
 - Poll token: Single-use, expires in 10 minutes
 - Refresh token: Allows long-lived sessions without re-binding, revocable by user
 
 ### 4.2 CLI Login (OAuth Device Flow)
 
-For the MemKeep CLI, used to sync workspace memories (e.g., Claude Code projects across devices).
+For the MemKeep CLI, used to sync Project documents (e.g., Claude Code projects across devices).
 
 **Flow:**
 1. User runs `memkeep login`
 2. CLI displays a URL and a device code
 3. User opens URL in browser, enters device code, completes GitHub OAuth
 4. CLI receives access_token + refresh_token
-5. User enters master password locally -> CLI derives DEK, caches it
+5. User enters master password locally → CLI derives DEK, caches it
 6. Done. CLI can now sync.
 
 This is standard OAuth 2.0 Device Authorization Grant (RFC 8628), same flow as `gh auth login`.
@@ -322,7 +276,7 @@ Push and pull are separate operations. Push uploads local changes to the server;
 
 ### 5.1 Client-Side Change Detection (Diff)
 
-Bots manage memories as local files (markdown with frontmatter). The SDK detects changes by diffing current files against a local snapshot, without requiring the bot to call SDK APIs for every write.
+Agents manage Documents as local files (markdown with frontmatter). The SDK detects changes by diffing current files against a local snapshot, without requiring the agent to call SDK APIs for every write.
 
 **Local storage:** A single JSON snapshot file (e.g., `.memkeep/sync.json`). No SQLite or other database dependency.
 
@@ -336,18 +290,18 @@ Bots manage memories as local files (markdown with frontmatter). The SDK detects
 }
 ```
 
-> **Design decision:** SQLite was considered but rejected. Diff is idempotent — interruption at any point is recovered by re-diffing on next sync, making a persistent mutation queue unnecessary. A JSON file has zero external dependencies, works on all platforms (including serverless), and is sufficient for the expected scale (tens to hundreds of memories per bot). Crash safety is achieved via atomic write (write temp file → rename).
+> **Design decision:** SQLite was considered but rejected. Diff is idempotent — interruption at any point is recovered by re-diffing on next sync, making a persistent mutation queue unnecessary. A JSON file has zero external dependencies, works on all platforms (including serverless), and is sufficient for the expected scale (tens to hundreds of Documents per Project/Agent). Crash safety is achieved via atomic write (write temp file → rename).
 
 **Diff algorithm (runs at sync start):**
 
-1. Scan all `.md` files in memory directory
+1. Scan all `.md` files in Document directory
 2. For each file, compute its relative path as `file_path`
 3. Compare against snapshot file:
    - **mtime unchanged** → skip (fast path, no I/O)
    - **mtime changed** → compute SHA-256 → compare with `content_hash`
      - Hash unchanged → skip (file was touched but content identical)
      - Hash changed → parse frontmatter for metadata (type, tags) → encrypt content → add `upsert` to mutations list
-   - **File not in snapshot** → new memory → parse frontmatter → encrypt → add `upsert` to mutations list
+   - **File not in snapshot** → new Document → parse frontmatter → encrypt → add `upsert` to mutations list
 4. For each snapshot entry with no matching file on disk → add `delete` to mutations list
 
 Mutations are held in memory, not persisted. If sync is interrupted, next sync re-diffs and regenerates them.
@@ -361,14 +315,14 @@ POST /v1/sync/push
 Authorization: Bearer <token>
 
 {
-  "namespace_id": "ws_memkeep",
+  "owner_id": "proj_memkeep",
   "changes": [
     {
       "action": "upsert",
       "file_path": "feedback_testing.md",
       "base_version": 3,
       "encrypted_content": "<nonce || ciphertext || auth_tag>",
-      "metadata": { "type": "feedback", "tags": ["testing"] }
+      "metadata": { "type": "memory", "tags": ["feedback", "testing"] }
     },
     {
       "action": "delete",
@@ -409,7 +363,7 @@ Response:
       "file_path": "project/infra.md",
       "version": 2,
       "encrypted_content": "<nonce || ciphertext || auth_tag>",
-      "metadata": { "type": "project", "tags": ["infra"] }
+      "metadata": { "type": "memory", "tags": ["project", "infra"] }
     }
   ],
   "next_cursor": "seq_108",
@@ -418,7 +372,7 @@ Response:
 ```
 
 Client processing:
-1. For each change, check if local memory already has same version → skip
+1. For each change, check if local Document already has same version → skip
 2. Decrypt content, write to local file
 3. Update snapshot entry for that file
 4. After all pages consumed, save `next_cursor` to snapshot file
@@ -442,22 +396,22 @@ SDK sync():
 - Server checks `base_version` on each push: if server version ≠ base_version, conflict detected
 - Server resolves conflicts using metadata only (content is encrypted, server cannot read it)
 - When conflict is detected, server keeps its version (server wins) and stores the client's version as a conflict copy
-- MVP: conflicts are auto-resolved (server wins). Bot may notify user: "1 conflict detected"
+- MVP: conflicts are auto-resolved (server wins). Agent may notify user: "1 conflict detected"
 - Phase 3: dashboard provides UI to review conflict copies side-by-side and resolve manually
 - SDK provides conflict callback for programmatic resolution
 
 ### 5.6 Real-time Sync (Optional)
 
 - WebSocket connection for push-based notifications
-- Bot connects to `wss://api.memkeep.ai/v1/ws`
-- Server pushes change notifications (bot then pulls via normal flow)
+- Agent connects to `wss://api.memkeep.ai/v1/ws`
+- Server pushes change notifications (agent then pulls via normal flow)
 - Falls back to periodic polling if WebSocket unavailable
 
-## 6. Memory Inheritance
+## 6. Memory Copy
 
-Allows users to copy memories from one bot to another. This is a one-time, user-initiated operation (snapshot), not continuous sync.
+Allows users to copy Documents from one Project/Agent to another. Supports any direction. This is a one-time, user-initiated operation (snapshot), not continuous sync.
 
-> **Design decision:** Live (continuous) inheritance was considered and rejected. Different bots operate in different contexts and may hold legitimately different views on the same topic. Automatically pushing memories between bots would introduce contradictions and make bot behavior unpredictable. Snapshot inheritance keeps the user in control.
+> **Design decision:** Live (continuous) sync was considered and rejected. Different agents operate in different contexts and may hold legitimately different views on the same topic. Automatically pushing Documents across Projects/Agents would introduce contradictions and make agent behavior unpredictable. Snapshot copy keeps the user in control.
 
 ### 6.1 ShareGrant Model
 
@@ -465,10 +419,10 @@ Allows users to copy memories from one bot to another. This is a one-time, user-
 User creates a ShareGrant:
 {
   "id": "grant_xxx",
-  "from_namespace": "bot_abc",
-  "to_namespace": "bot_def",
+  "from_owner": "agent_abc",
+  "to_owner": "agent_def",
   "filter": {
-    "types": ["feedback", "project"],
+    "types": ["memory", "context"],
     "tags": ["important"],
     "date_range": { "after": "2026-01-01" }
   },
@@ -476,41 +430,41 @@ User creates a ShareGrant:
 }
 ```
 
-Namespaces can be bots or workspaces. For example, sharing from a workspace to a bot, or between two bots.
+`from_owner` and `to_owner` can be Projects or Agents, supporting any direction.
 
-### 6.2 Snapshot Inheritance
+### 6.2 Snapshot Copy
 
-One-time copy of matching memories from source namespace to target namespace.
+One-time copy of matching Documents from source to target.
 
-- Memories are duplicated with `origin` field set for traceability
+- Documents are duplicated with `origin` field set for traceability
 - No ongoing relationship after copy — source and target evolve independently
-- Target bot can freely modify or delete inherited memories
+- Target can freely modify or delete copied Documents
 
 ### 6.3 Filter System
 
-Users can control what gets shared:
+Users can control what gets copied:
 
 | Filter | Description |
 |--------|-------------|
-| `types` | Memory types (user, feedback, project, reference) |
-| `tags` | Only memories with specific tags |
-| `date_range` | Only memories within a time window |
-| `exclude_tags` | Exclude memories with specific tags |
+| `types` | Document types (memory, context, conversation, skill) |
+| `tags` | Only Documents with specific tags |
+| `date_range` | Only Documents within a time window |
+| `exclude_tags` | Exclude Documents with specific tags |
 
 ### 6.4 Traceability
 
-Every inherited memory carries an `origin` field:
+Every copied Document carries an `origin` field:
 
 ```yaml
 origin:
-  namespace_id: bot_abc
+  owner_id: agent_abc
   file_path: role.md
-  inherited_at: 2026-03-31T12:00:00Z
+  copied_at: 2026-03-31T12:00:00Z
   grant_id: grant_xxx
 ```
 
 This enables:
-- User can see where a memory came from
+- User can see where a Document came from
 - Audit trail for compliance
 
 ## 7. Tech Stack
@@ -531,11 +485,11 @@ This enables:
 
 | Form | Language | Use Case |
 |------|----------|----------|
-| SDK | TypeScript | JS/TS bot ecosystem integration |
-| SDK | Python | Python bot ecosystem integration |
-| CLI | Rust (cross-compile) | Workspace sync (Claude Code, etc.), terminal users, CI/CD |
-| MCP Server | TypeScript | Optional integration for MCP-compatible bots |
-| Skill/Plugin | Per bot platform | Install-and-use, zero code |
+| SDK | TypeScript | JS/TS agent ecosystem integration |
+| SDK | Python | Python agent ecosystem integration |
+| CLI | Rust (cross-compile) | Project sync (Claude Code, etc.), terminal users, CI/CD |
+| MCP Server | TypeScript | Optional integration for MCP-compatible agents |
+| Skill/Plugin | Per agent platform | Install-and-use, zero code |
 
 ### 7.3 Storage
 
@@ -546,7 +500,7 @@ All data stored in PostgreSQL. No separate object storage required.
 - **Encrypted DEK, recovery-encrypted DEK**: `BYTEA` columns in user table
 - **Query optimization**: list/filter queries should SELECT only metadata columns to avoid TOAST reads; pull content only when needed
 
-Estimated scale: memory files are typically 1-10KB. 1000 users × 1000 memories ≈ 1-5GB, well within PG comfort zone. If large file support is needed in the future (e.g., skill attachments), S3 can be introduced at that point.
+Estimated scale: Document files are typically 1-10KB. 1000 users × 1000 Documents ≈ 1-5GB, well within PG comfort zone. If large file support is needed in the future (e.g., attachments), S3 can be introduced at that point.
 
 ### 7.4 Infrastructure
 
@@ -557,9 +511,9 @@ Estimated scale: memory files are typically 1-10KB. 1000 users × 1000 memories 
 ## 8. API Overview
 
 ```
-# Auth (Bot bind)
-POST   /v1/bind/request          # Bot initiates bind
-GET    /v1/bind/poll              # Bot polls for confirmation
+# Auth (Agent bind)
+POST   /v1/bind/request          # Agent initiates bind
+GET    /v1/bind/poll              # Agent polls for confirmation
 POST   /v1/bind/confirm           # User confirms bind
 
 # Auth (CLI login - OAuth Device Flow)
@@ -576,32 +530,31 @@ POST   /v1/keys/setup             # Initial master password setup (store encrypt
 POST   /v1/sync/push              # Push local changes (batched)
 GET    /v1/sync/pull              # Pull server changes (cursor + pagination)
 
-# Memories (CRUD, primarily for dashboard)
-GET    /v1/memories               # List memories (metadata only). ?ns= for cross-namespace read (same user)
-POST   /v1/memories               # Create memory
-GET    /v1/memories/*path         # Get single memory. ?ns= for cross-namespace read (same user)
-PATCH  /v1/memories/*path         # Update memory
-DELETE /v1/memories/*path         # Delete memory
+# Documents (CRUD, primarily for dashboard)
+GET    /v1/documents              # List Documents (metadata only). ?owner= to specify Project/Agent
+POST   /v1/documents              # Create Document
+GET    /v1/documents/*path        # Get single Document. ?owner= to specify Project/Agent
+PATCH  /v1/documents/*path        # Update Document
+DELETE /v1/documents/*path        # Delete Document
 
-# Skills
-GET    /v1/skills                 # List skills
-GET    /v1/skills/*path           # Get single skill
+# Memory Copy
+POST   /v1/copy                   # Copy Documents from source Project/Agent to target
 
 # Sharing
 POST   /v1/grants                 # Create share grant
 GET    /v1/grants                 # List grants
 DELETE /v1/grants/:id             # Revoke grant
 
-# Workspaces
-POST   /v1/workspaces             # Create workspace
-GET    /v1/workspaces             # List user's workspaces
-DELETE /v1/workspaces/:name       # Delete workspace
+# Projects
+POST   /v1/projects               # Create Project
+GET    /v1/projects               # List user's Projects
+DELETE /v1/projects/:name         # Delete Project
 
-# Bots
-GET    /v1/bots                   # List user's bots
-PATCH  /v1/bots/:id              # Update bot info
-DELETE /v1/bots/:id               # Remove bot
-GET    /v1/bots/:id/status        # Bot sync status
+# Agents
+GET    /v1/agents                 # List user's Agents
+PATCH  /v1/agents/:id            # Update Agent info
+DELETE /v1/agents/:id             # Remove Agent
+GET    /v1/agents/:id/status      # Agent sync status
 
 # WebSocket
 WS     /v1/ws                     # Real-time sync channel
@@ -609,50 +562,11 @@ WS     /v1/ws                     # Real-time sync channel
 
 ## 9. Project Phases
 
-### MVP (Phase 1): Complete Sync Flow
-Goal: user can register, bind a bot, and sync memories across devices.
-
-- [ ] Rust server scaffold (axum + sqlx + PostgreSQL)
-- [ ] Database schema
-- [ ] User registration (GitHub OAuth)
-- [ ] Master password setup + encrypted DEK storage + Recovery Key
-- [ ] Bind flow authentication (with DEK delivery)
-- [ ] CLI login (OAuth Device Flow)
-- [ ] Workspace CRUD
-- [ ] Memory CRUD API (encrypted content)
-- [ ] Sync protocol: push/pull with diff-based change detection
-- [ ] Conflict detection (server version wins, store conflict copy)
-- [ ] TypeScript SDK (client-side encryption, diff, sync)
-- [ ] CLI: `memkeep login`, `memkeep init`, `memkeep sync`
-
-### Phase 2: Cross-Bot Sharing + Ecosystem
-Goal: knowledge sharing between bots, broader tool integration.
-
-- [ ] Snapshot inheritance (ShareGrant model + filter system)
-- [ ] Cross-namespace memory read API
-- [ ] Claude Code hook integration
-- [ ] Skill sync
-- [ ] Python SDK
-
-### Phase 3: Dashboard + Experience
-Goal: full management UI, polished experience.
-
-- [ ] Web dashboard (memory management, conflict resolution UI, sync status)
-- [ ] Real-time sync (WebSocket)
-- [ ] CLI daemon mode (background file watcher + auto-sync)
-- [ ] Data export / account deletion
-
-### Phase 4: Platform
-Goal: ecosystem expansion, enterprise readiness.
-
-- [ ] MCP Server (optional integration layer)
-- [ ] OpenClaw skill/plugin
-- [ ] Memory-as-a-Service API (third-party integrations)
-- [ ] Enterprise features (SSO, audit log, admin dashboard)
+See [ROADMAP.md](../ROADMAP.md). Core path: MVP (sync) → Phase 2 (memory copy + ecosystem) → Phase 3 (dashboard) → Phase 4 (MaaS API + enterprise).
 
 ## 10. Open Questions
 
 - Multi-region deployment considerations?
-- Multi-bot collaboration: messaging/events between bots, shared context, task delegation. Current architecture (WebSocket + auth model) is forward-compatible -- design when use cases are clearer.
+- Multi-agent collaboration: messaging/events between agents, shared context, task delegation. Current architecture (WebSocket + auth model) is forward-compatible — design when use cases are clearer.
 
-> Rate limiting, pricing/free tier, and account lifecycle are now defined in `docs/user-stories.md` Sections 3-6.
+> Rate limiting and pricing details are defined separately in the pricing documentation.

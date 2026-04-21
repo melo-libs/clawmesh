@@ -15,7 +15,7 @@ AI agents are everywhere, but their memory is nowhere. Every team reinvents the 
 | Phase | Goal |
 |-------|------|
 | **MVP** | Register, bind an agent, sync memories across devices |
-| **Phase 2** | Cross-agent sharing, skill sync, ecosystem SDKs |
+| **Phase 2** | Cross-agent sharing, memory copy, ecosystem SDKs |
 | **Phase 3** | Web dashboard, real-time sync, conflict resolution UI |
 | **Phase 4** | Memory-as-a-Service API for third-party AI platforms |
 
